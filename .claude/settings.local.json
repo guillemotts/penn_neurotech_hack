@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /Users/tereza/sciencecorp/penn_neurotech_hack/run.sh)",
+      "Bash(pip install -e . 2>&1 | tail -5)",
+      "Bash(python -c \"import penn_nh; print\\('import OK'\\)\" && pytest tests/ 2>&1)",
+      "Bash(python -m pytest tests/test_bitrate.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_interfaces.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_stage3_reject.py tests/test_stage2_proto.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_mock_decoder.py tests/test_sweep_theta.py -v 2>&1)"
+    ]
+  }
+}
