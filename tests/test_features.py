@@ -150,3 +150,48 @@ def test_stack_causal_filter_state_fresh():
     out1 = stack.transform(raw)
     out2 = stack.transform(raw)
     np.testing.assert_array_equal(out1, out2)
+
+
+def test_lowrate_shape_preserved():
+    from penn_nh.features.stack import FeatureConfigLowRate, LowRateFeatureStack
+    cfg = FeatureConfigLowRate()
+    fs = LowRateFeatureStack(cfg)
+    raw = np.random.RandomState(0).randn(64, 42).astype(np.float32)
+    out = fs.transform(raw)
+    assert out.shape == (64, 42)
+    assert out.dtype == np.float32
+
+
+def test_lowrate_bandpass_passes_inband():
+    from penn_nh.features.stack import FeatureConfigLowRate, LowRateFeatureStack
+    cfg = FeatureConfigLowRate(use_zscore=False, use_car=False)
+    fs = LowRateFeatureStack(cfg)
+    t = np.arange(2000) / 105.0
+    sig = np.sin(2 * np.pi * 10.0 * t).astype(np.float32)  # 10 Hz, in band
+    raw = np.tile(sig, (4, 1))
+    out = fs.transform(raw)
+    # skip warmup
+    assert np.abs(out[:, 200:]).mean() > 0.3
+
+
+def test_lowrate_bandpass_rejects_outband():
+    from penn_nh.features.stack import FeatureConfigLowRate, LowRateFeatureStack
+    cfg = FeatureConfigLowRate(use_zscore=False, use_car=False)
+    fs = LowRateFeatureStack(cfg)
+    t = np.arange(2000) / 105.0
+    sig = np.sin(2 * np.pi * 50.0 * t).astype(np.float32)  # 50 Hz, above band
+    raw = np.tile(sig, (4, 1))
+    out = fs.transform(raw)
+    assert np.abs(out[:, 200:]).mean() < 0.1
+
+
+def test_lowrate_zscore_fit():
+    from penn_nh.features.stack import FeatureConfigLowRate, LowRateFeatureStack
+    cfg = FeatureConfigLowRate(use_bandpass=False, use_car=False, use_zscore=True)
+    fs = LowRateFeatureStack(cfg)
+    rng = np.random.RandomState(0)
+    train = [rng.randn(8, 200).astype(np.float32) * 5.0 + 3.0 for _ in range(5)]
+    fs.fit_zscore(train)
+    out = fs.transform(train[0])
+    assert abs(out.mean()) < 0.5
+    assert abs(out.std() - 1.0) < 0.5

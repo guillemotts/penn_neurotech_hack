@@ -43,7 +43,17 @@
       "Bash(python3 -c \"\nimport synapse\n# Check version\nimport importlib.metadata\ntry:\n    print\\('synapse version:', importlib.metadata.version\\('synapse'\\)\\)\nexcept:\n    pass\ntry:\n    print\\('science-synapse version:', importlib.metadata.version\\('science-synapse'\\)\\)\nexcept:\n    pass\n# try other common names\ntry:\n    print\\('synapse-api version:', importlib.metadata.version\\('synapse-api'\\)\\)\nexcept:\n    pass\n\")",
       "Bash(python3 -c \"\n# Verify Config class behavior - note mutable class-level defaults\nimport synapse as syn\n\nc1 = syn.Config\\(\\)\nprint\\('Empty config nodes:', c1.nodes\\)\nprint\\('Empty config connections:', c1.connections\\)\n\n# Check Channel constructor\nch = syn.Channel\\(id=0, electrode_id=10, reference_id=11\\)\nprint\\(f'Channel: id={ch.id}, electrode_id={ch.electrode_id}, reference_id={ch.reference_id}'\\)\nprint\\(f'Channel type field: {ch.type}'\\)\n\")",
       "Bash(python -m pytest tests/test_inspect_encoder.py -v 2>&1)",
-      "Bash(python -m pytest tests/test_collect_training.py -v 2>&1)"
+      "Bash(python -m pytest tests/test_collect_training.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_load_training_csv.py -v 2>&1)",
+      "Bash(cd ~/sciencecorp/synapse-example-app && git submodule update --init --recursive 2>&1)",
+      "Bash(synapsectl apps build ~/sciencecorp/synapse-example-app 2>&1)",
+      "Bash(open -a Docker 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/load_training_csv.py --neural data/train_ani-1.csv --cues data/train_ani_1_seed10.csv --w1-ms 400 --out /tmp/ani1_out.npz 2>&1 | tee /tmp/loader_ani1.log)",
+      "Bash(docker info 2>&1 | head -5)",
+      "Bash(docker info 2>&1 | grep -i \"server version\\\\|ERROR\\\\|error\")",
+      "Bash(docker info 2>&1 | tail -20)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python - <<'EOF'\nimport pandas as pd\nc = pd.read_csv\\('data/train_ani_1_seed10.csv'\\)\nprint\\(\"CUE_COLS\", list\\(c.columns\\)\\)\nprint\\(\"CUE_HEAD\"\\); print\\(c.head\\(10\\)\\)\nprint\\(\"CUE_TAIL\"\\); print\\(c.tail\\(3\\)\\)\nprint\\(\"N_UNIQUE_CUES\", c['cue'].nunique\\(\\) if 'cue' in c.columns else 'no cue col'\\)\nprint\\(\"CUE_VALUE_COUNTS\"\\); print\\(c['cue'].value_counts\\(\\) if 'cue' in c.columns else ''\\)\nEOF)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/load_training_csv.py --neural data/train_ani-1.csv --cues data/train_ani_1_seed10.csv --w1-ms 400 --out /tmp/ani1_out.npz 2>&1)"
     ]
   }
 }
