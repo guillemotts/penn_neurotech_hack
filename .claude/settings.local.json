@@ -11,7 +11,15 @@
       "Bash(python -m pytest tests/test_session.py tests/test_ui.py -v 2>&1)",
       "Bash(python -m pytest tests/test_labeler.py tests/test_linear_probe.py tests/test_sweep_n.py -v 2>&1)",
       "Bash(python -c \"from scripts.run_game import main; print\\('ok'\\)\" 2>&1)",
-      "Bash(pytest tests/test_run_game.py -v 2>&1)"
+      "Bash(pytest tests/test_run_game.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_features.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_stage1_cnn.py -v 2>&1)",
+      "Bash(pip install onnxruntime 2>&1 | tail -3)",
+      "Bash(pip install onnx 2>&1 | tail -3)",
+      "Bash(python -c \"from penn_nh.features.stack import FeatureConfig, FeatureStack; print\\('OK'\\)\" && python -c \"from penn_nh.eval.sweep_n import sweep_n; print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/test_integration.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_run_calibration.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_sweep_alpha_tau.py tests/test_sweep_window.py -v 2>&1)"
     ]
   }
 }

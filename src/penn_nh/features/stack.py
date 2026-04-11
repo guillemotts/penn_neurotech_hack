@@ -1,0 +1,75 @@
+from dataclasses import dataclass
+
+import numpy as np
+
+from penn_nh.features.filters import apply_bandpass, car, design_bandpass
+from penn_nh.features.power import spike_band_power
+from penn_nh.features.spikes import bin_spike_counts, rms_per_channel, threshold_crossings
+
+
+@dataclass
+class FeatureConfig:
+    fs_hz: float = 32000.0
+    bandpass_low_hz: float = 300.0
+    bandpass_high_hz: float = 3000.0
+    bandpass_order: int = 4
+    bin_ms: float = 5.0
+    spike_threshold_k: float = 3.0
+    min_isi_ms: float = 1.0
+    use_spike_counts: bool = True
+    use_spike_power: bool = True
+
+
+class FeatureStack:
+    def __init__(self, cfg: FeatureConfig):
+        self.cfg = cfg
+        self._b, self._a = design_bandpass(
+            cfg.bandpass_low_hz, cfg.bandpass_high_hz, cfg.fs_hz, cfg.bandpass_order
+        )
+        self._bin_samples = int(round(cfg.bin_ms * 1e-3 * cfg.fs_hz))
+        self._min_isi = max(1, int(round(cfg.min_isi_ms * 1e-3 * cfg.fs_hz)))
+        self._mean: np.ndarray | None = None
+        self._std: np.ndarray | None = None
+
+    def fit_zscore(self, X_list: list[np.ndarray]) -> None:
+        """Accumulate per-feature mean/std across training windows. Each X is (S*C, n_bins)."""
+        all_data = np.concatenate(X_list, axis=1)  # (S*C, total_bins)
+        self._mean = all_data.mean(axis=1, keepdims=True)
+        self._std = all_data.std(axis=1, keepdims=True)
+        self._std[self._std < 1e-12] = 1.0
+
+    def transform(self, raw: np.ndarray) -> np.ndarray:
+        """
+        raw (C, T) single trial window.
+        Pipeline: bandpass -> CAR -> features -> z-score -> (S*C, n_bins) float32.
+        """
+        if not self.cfg.use_spike_counts and not self.cfg.use_spike_power:
+            raise ValueError("At least one feature stream must be enabled")
+
+        # Bandpass (fresh zi per window)
+        filtered = apply_bandpass(raw, self._b, self._a)
+        # CAR
+        filtered = car(filtered)
+
+        C, T = filtered.shape
+        n_bins = T // self._bin_samples
+
+        streams = []
+
+        if self.cfg.use_spike_counts:
+            rms = rms_per_channel(filtered)
+            thresholds = -self.cfg.spike_threshold_k * rms
+            crossings = threshold_crossings(filtered, thresholds, self._min_isi)
+            counts = bin_spike_counts(crossings, n_bins, self._bin_samples)
+            streams.append(counts.astype(float))
+
+        if self.cfg.use_spike_power:
+            power = spike_band_power(filtered, self._bin_samples)
+            streams.append(power)
+
+        result = np.concatenate(streams, axis=0)
+
+        if self._mean is not None and self._std is not None:
+            result = (result - self._mean) / self._std
+
+        return result.astype(np.float32)
