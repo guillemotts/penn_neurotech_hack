@@ -7,7 +7,11 @@
       "Bash(python -m pytest tests/test_bitrate.py -v 2>&1)",
       "Bash(python -m pytest tests/test_interfaces.py -v 2>&1)",
       "Bash(python -m pytest tests/test_stage3_reject.py tests/test_stage2_proto.py -v 2>&1)",
-      "Bash(python -m pytest tests/test_mock_decoder.py tests/test_sweep_theta.py -v 2>&1)"
+      "Bash(python -m pytest tests/test_mock_decoder.py tests/test_sweep_theta.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_session.py tests/test_ui.py -v 2>&1)",
+      "Bash(python -m pytest tests/test_labeler.py tests/test_linear_probe.py tests/test_sweep_n.py -v 2>&1)",
+      "Bash(python -c \"from scripts.run_game import main; print\\('ok'\\)\" 2>&1)",
+      "Bash(pytest tests/test_run_game.py -v 2>&1)"
     ]
   }
 }
