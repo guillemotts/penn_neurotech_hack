@@ -53,7 +53,25 @@
       "Bash(docker info 2>&1 | grep -i \"server version\\\\|ERROR\\\\|error\")",
       "Bash(docker info 2>&1 | tail -20)",
       "Bash(cd ~/sciencecorp/penn_neurotech_hack && python - <<'EOF'\nimport pandas as pd\nc = pd.read_csv\\('data/train_ani_1_seed10.csv'\\)\nprint\\(\"CUE_COLS\", list\\(c.columns\\)\\)\nprint\\(\"CUE_HEAD\"\\); print\\(c.head\\(10\\)\\)\nprint\\(\"CUE_TAIL\"\\); print\\(c.tail\\(3\\)\\)\nprint\\(\"N_UNIQUE_CUES\", c['cue'].nunique\\(\\) if 'cue' in c.columns else 'no cue col'\\)\nprint\\(\"CUE_VALUE_COUNTS\"\\); print\\(c['cue'].value_counts\\(\\) if 'cue' in c.columns else ''\\)\nEOF)",
-      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/load_training_csv.py --neural data/train_ani-1.csv --cues data/train_ani_1_seed10.csv --w1-ms 400 --out /tmp/ani1_out.npz 2>&1)"
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/load_training_csv.py --neural data/train_ani-1.csv --cues data/train_ani_1_seed10.csv --w1-ms 400 --out /tmp/ani1_out.npz 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/run_linear_probe_ani1.py 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/run_linear_probe_pooled.py 2>&1)",
+      "Bash(docker info 2>&1 | grep \"Server Version\")",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/sanity_probe_raw.py 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/sweep_window_raw.py 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/sanity_onset_detect.py 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && python scripts/macro_probe.py 2>&1)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && for f in data/train_ani-1.csv data/train_ani_1_seed10.csv data/hard_testing_capture-1.csv; do echo \"=== $f ===\"; git log --all --oneline -- \"$f\" | head -5; done)",
+      "Bash(env | grep -i scifi; which synapsectl 2>&1; synapsectl --version 2>&1)",
+      "Bash(done)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && wc -l data/*.csv)",
+      "Bash(find ~/sciencecorp/penn_neurotech_hack -name '*controller_training*' -o -name '*easy*' -o -name '*hard_training*' 2>/dev/null | grep -v __pycache__ | grep -v .git)",
+      "Bash(synapsectl --help 2>&1 | head -40)",
+      "Bash(find ~/sciencecorp -name '*controller_training*' -o -name '*easy*.json' -o -name '*hard*.json' 2>/dev/null | grep -v __pycache__ | grep -v .git | grep -v node_modules)",
+      "Bash(cd ~/sciencecorp/penn_neurotech_hack && mkdir -p data/h5 && synapsectl -u $SCIFI read config/hard_training.json --output data/h5/test_10s.h5 --duration 10 --overwrite 2>&1)",
+      "Bash(synapsectl read --help 2>&1)",
+      "Bash(echo \"SCIFI=$SCIFI\")",
+      "Bash(python -m pytest tests/test_run_cues.py -v 2>&1)"
     ]
   }
 }
