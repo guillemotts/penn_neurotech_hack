@@ -370,7 +370,14 @@ class CollectState:
     # ── Phase state machine ────────────────────────────────────────────────────
     # "setup" | "countdown" | "sync_prompt" | "sync_wait" | "sync_release"
     # | "cueing" | "h5_select" | "processing" | "done" | "error"
+    # | "calibrating" | "calib_done" | "calib_error"
     phase: str = "setup"
+    # calibration sub-results (populated after auto-calibration)
+    calib_N: int = 0
+    calib_theta: float = 0.0
+    calib_B: float = 0.0
+    calib_path: str = ""
+    calib_arch_idx: int = 0   # arch index for auto-calibration (default eegnet)
 
     # ── Session runtime ────────────────────────────────────────────────────────
     cue_seq: list   = field(default_factory=list)   # list[int] symbol indices
@@ -416,9 +423,17 @@ class CollectState:
             elif kind == "done":
                 self.npz_out_path = payload
                 self.phase = "done"
+                # Automatically start calibration with the processed file
+                self.start_auto_calibration()
             elif kind == "error":
                 self.error_msg = payload
                 self.phase = "error"
+            elif kind == "calib_done":
+                self.calib_N, self.calib_theta, self.calib_B, self.calib_path = payload
+                self.phase = "calib_done"
+            elif kind == "calib_error":
+                self.error_msg = payload
+                self.phase = "calib_error"
 
     def start_session(self) -> None:
         import numpy as _np
@@ -442,6 +457,15 @@ class CollectState:
         threading.Thread(
             target=_process_h5_worker,
             args=(self, json_path, h5_path),
+            daemon=True,
+        ).start()
+
+    def start_auto_calibration(self) -> None:
+        self.phase = "calibrating"
+        self.progress_msg = "Starting calibration..."
+        threading.Thread(
+            target=_auto_calib_worker,
+            args=(self,),
             daemon=True,
         ).start()
 
@@ -652,6 +676,70 @@ def _process_h5_worker(collect: CollectState, json_path: Path, h5_path: Path) ->
         import traceback as _tb
         q.put(("error", _tb.format_exc()))
 
+
+
+def _auto_calib_worker(collect: "CollectState") -> None:
+    """Background thread: run calibration on collect.npz_out_path, post results to collect._msg_queue."""
+    q = collect._msg_queue
+    try:
+        q.put(("progress", "Importing calibration modules..."))
+        try:
+            import sys as _sys
+            import numpy as _np
+            import yaml as _yaml
+            _sys.path.insert(0, str(Path(__file__).parent))
+            from run_calibration import load_trials, build_factory
+            from penn_nh.eval.sweep_n import sweep_n
+        except ImportError as exc:
+            q.put(("calib_error", f"Import failed: {exc}\nEnsure penn_nh is installed."))
+            return
+
+        path = collect.npz_out_path
+        if path is None or not path.exists():
+            q.put(("calib_error", f"Processed .npz not found: {path}"))
+            return
+
+        q.put(("progress", f"Loading {path.name}..."))
+        data = load_trials(path)
+        X, stick = data["raw"], data["stick_xy"]
+        M = X.shape[0]
+        split = int(M * 0.7)
+
+        arch = ARCH_CHOICES[collect.calib_arch_idx]
+        q.put(("progress", f"Loaded {M} trials  •  arch: {arch}  •  running sweep..."))
+        factory = build_factory(arch)
+        result = sweep_n(
+            X_train=X[:split], stick_xy_train=stick[:split],
+            X_val=X[split:],   stick_xy_val=stick[split:],
+            factory=factory,
+            n_grid=_np.array([6, 8, 10, 12, 16, 20, 24, 32], dtype=int),
+            theta_grid=_np.linspace(0.0, 0.5, 26),
+        )
+        best = int(_np.argmax(result["B"]))
+        N     = int(result["N"][best])
+        theta = float(result["theta"][best])
+        B     = float(result["B"][best])
+        q.put(("progress", f"Sweep done — N={N}  theta={theta:.3f}  B={B:.3f} bits/s"))
+
+        out_path = CALIB_CONFIG_DIR / "session_config.yaml"
+        cfg = {
+            "n": N, "theta": theta, "alpha": 0.5, "tau": 0.1,
+            "window_w0_ms": 0.0, "window_w1_ms": 100.0,
+            "stage1_arch": arch,
+            "feature_config": {
+                "fs_hz": 32000.0, "bandpass_low_hz": 300.0,
+                "bandpass_high_hz": 3000.0, "bin_ms": 5.0,
+                "spike_threshold_k": 3.0, "min_isi_ms": 1.0,
+                "use_spike_counts": True, "use_spike_power": True,
+            },
+        }
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as _f:
+            _yaml.safe_dump(cfg, _f, sort_keys=False)
+        q.put(("calib_done", (N, theta, B, str(out_path))))
+    except Exception:
+        import traceback as _tb
+        q.put(("calib_error", _tb.format_exc()))
 
 
 class UDPInputReceiver(threading.Thread):
@@ -1769,7 +1857,7 @@ def draw_collect_screen(
 
     # ── Light-background setup / result phases ───────────────────────────────
     surface.fill(BG)
-    draw_text(surface, "DATA COLLECTION", font_title, INK, (cx, 44), center=True)
+    draw_text(surface, "CALIBRATION", font_title, INK, (cx, 44), center=True)
     draw_text(surface, "Record a cue session for decoder training",
               font_med, (130, 108, 72), (cx, 116), center=True)
     pygame.draw.line(surface, (210, 198, 175), (80, 146), (WIDTH - 80, 146), 2)
@@ -1781,88 +1869,74 @@ def draw_collect_screen(
     pw = panel.w - 56
 
     if collect.phase == "setup":
-        # Row 1: n_trials (left) + ISI + alphabet (right)
-        third = (pw - 48) // 3
+        # ── Row 1: TRIALS preset buttons (left) + ISI stepper (right) ──────────
+        half = (pw - 40) // 2
 
-        # n_trials
+        # TRIALS – 3 preset buttons: 20 / 50 / 100
         draw_text(surface, "TRIALS", font_med, INK, (px, py))
-        nt_rect = pygame.Rect(px, py + 34, third, 42)
-        draw_round_rect(surface, nt_rect, PANEL_ALT, radius=8)
-        pygame.draw.rect(surface, (200, 188, 165), nt_rect, width=1, border_radius=8)
-        draw_text(surface, str(collect.n_trials), font_med, INK,
-                  (nt_rect.x + 8, nt_rect.y + 9))
-        btn_nm = pygame.Rect(nt_rect.right + 4, py + 34, 28, 42)
-        btn_np = pygame.Rect(btn_nm.right + 2, py + 34, 28, 42)
-        for r, lbl in [(btn_nm, "-"), (btn_np, "+")]:
-            draw_round_rect(surface, r, PANEL_ALT, radius=6)
-            pygame.draw.rect(surface, (200, 188, 165), r, width=1, border_radius=6)
-            draw_text(surface, lbl, font_big, INK, r.center, center=True)
-        rects["trials_minus"] = btn_nm
-        rects["trials_plus"]  = btn_np
+        trial_presets = [20, 50, 100]
+        preset_w = (half - 20) // 3
+        for i, val in enumerate(trial_presets):
+            bx = px + i * (preset_w + 10)
+            br = pygame.Rect(bx, py + 34, preset_w, 48)
+            selected = (collect.n_trials == val)
+            bg = BLUE if selected else PANEL_ALT
+            bd = BLUE if selected else (200, 188, 165)
+            draw_round_rect(surface, br, bg, radius=8)
+            pygame.draw.rect(surface, bd, br, width=2, border_radius=8)
+            draw_text(surface, str(val), font_big, WHITE if selected else INK,
+                      br.center, center=True)
+            rects[f"trials_{val}"] = br
 
         # ISI
-        isi_x = px + third + 20
+        isi_x = px + half + 40
         draw_text(surface, "ISI (s)", font_med, INK, (isi_x, py))
-        isi_rect = pygame.Rect(isi_x, py + 34, third - 64, 42)
+        btn_im = pygame.Rect(isi_x, py + 34, 44, 48)
+        isi_rect = pygame.Rect(btn_im.right + 8, py + 34, half - 44 - 8 - 44 - 8, 48)
+        btn_ip = pygame.Rect(isi_rect.right + 8, py + 34, 44, 48)
         draw_round_rect(surface, isi_rect, PANEL_ALT, radius=8)
         pygame.draw.rect(surface, (200, 188, 165), isi_rect, width=1, border_radius=8)
-        draw_text(surface, f"{collect.isi_s:.1f}", font_med, INK,
-                  (isi_rect.x + 8, isi_rect.y + 9))
-        btn_im = pygame.Rect(isi_rect.right + 4, py + 34, 28, 42)
-        btn_ip = pygame.Rect(btn_im.right + 2, py + 34, 28, 42)
-        for r, lbl in [(btn_im, "-"), (btn_ip, "+")]:
+        draw_text(surface, f"{collect.isi_s:.1f}", font_big, INK,
+                  isi_rect.center, center=True)
+        for r, lbl in [(btn_im, "−"), (btn_ip, "+")]:
             draw_round_rect(surface, r, PANEL_ALT, radius=6)
             pygame.draw.rect(surface, (200, 188, 165), r, width=1, border_radius=6)
             draw_text(surface, lbl, font_big, INK, r.center, center=True)
         rects["isi_minus"] = btn_im
         rects["isi_plus"]  = btn_ip
 
-        # Alphabet
-        alph_x = px + 2 * third + 40
-        draw_text(surface, "ALPHABET", font_med, INK, (alph_x, py))
-        alph_names = list(COLLECT_ALPHABETS.keys())
-        btn_al = pygame.Rect(alph_x, py + 34, 36, 42)
-        btn_ar = pygame.Rect(alph_x + third - 36, py + 34, 36, 42)
-        an_rect = pygame.Rect(alph_x + 40, py + 34, third - 80, 42)
-        for r, lbl in [(btn_al, "<"), (btn_ar, ">")]:
-            draw_round_rect(surface, r, PANEL_ALT, radius=6)
-            pygame.draw.rect(surface, (200, 188, 165), r, width=1, border_radius=6)
-            draw_text(surface, lbl, font_big, INK, r.center, center=True)
-        draw_round_rect(surface, an_rect, PANEL_ALT, radius=6)
-        cur_alph = alph_names[alph_names.index(collect.alphabet_name)]
-        draw_text(surface, f"{cur_alph} ({len(COLLECT_ALPHABETS[cur_alph])})",
-                  font_med, INK, an_rect.center, center=True)
-        rects["alph_left"]  = btn_al
-        rects["alph_right"] = btn_ar
-
         # Info box
-        sep1 = py + 34 + 42 + 18
+        sep1 = py + 34 + 48 + 22
         pygame.draw.line(surface, (210, 198, 175), (px, sep1), (px + pw, sep1), 1)
-        iy = sep1 + 18
+        iy = sep1 + 20
         est_s = collect.n_trials * collect.isi_s
         draw_text(surface,
-                  f"Estimated session length:  {int(est_s // 60)} min {int(est_s % 60)} s  "
-                  f"•  {collect.n_trials} cues  •  ISI {collect.isi_s:.1f} s",
+                  f"Estimated session:  {int(est_s // 60)} min {int(est_s % 60)} s  "
+                  f"({collect.n_trials} cues at {collect.isi_s:.1f} s each)",
                   font_med, (100, 90, 75), (cx, iy), center=True)
-        iy += 36
+        iy += 38
         draw_text(surface,
-                  "A sync gesture (hold LB 2 s) will appear first to align hardware clock.",
+                  "A sync gesture (hold LB 2 s) will appear first to align the hardware clock.",
                   font_small, (140, 128, 108), (cx, iy), center=True)
         iy += 28
         draw_text(surface,
-                  "Make sure the neural recorder (Synapse) is already running and saving .h5.",
+                  "Ensure Synapse is running and recording an .h5 file before starting.",
                   font_small, RED, (cx, iy), center=True)
+        iy += 28
+        draw_text(surface,
+                  "Calibration will run automatically once recording is complete.",
+                  font_small, (100, 140, 80), (cx, iy), center=True)
 
         # Buttons
         bty = panel.bottom - 74
         pygame.draw.line(surface, (210, 198, 175), (px, bty - 18), (px + pw, bty - 18), 1)
-        start_r = pygame.Rect(px, bty, int(pw * 0.56), 52)
+        start_r = pygame.Rect(px, bty, int(pw * 0.65), 52)
         skip_r  = pygame.Rect(start_r.right + 16, bty, pw - start_r.w - 16, 52)
         draw_round_rect(surface, start_r, BLUE, radius=12)
         draw_text(surface, "START COLLECTION", font_big, WHITE, start_r.center, center=True)
         draw_round_rect(surface, skip_r, PANEL_ALT, radius=12)
         pygame.draw.rect(surface, (200, 188, 165), skip_r, width=2, border_radius=12)
-        draw_text(surface, "SKIP TO CALIBRATION", font_big, INK, skip_r.center, center=True)
+        draw_text(surface, "SKIP TO GAME", font_big, INK, skip_r.center, center=True)
         rects["start"] = start_r
         rects["skip"]  = skip_r
 
@@ -1919,7 +1993,7 @@ def draw_collect_screen(
         draw_text(surface, "PROCESS + CALIBRATE", font_big, WHITE, proc_r.center, center=True)
         draw_round_rect(surface, skip_r, PANEL_ALT, radius=12)
         pygame.draw.rect(surface, (200, 188, 165), skip_r, width=2, border_radius=12)
-        draw_text(surface, "SKIP TO CALIBRATION", font_big, INK, skip_r.center, center=True)
+        draw_text(surface, "SKIP TO GAME", font_big, INK, skip_r.center, center=True)
         if can_proc:
             rects["process"] = proc_r
         rects["skip"] = skip_r
@@ -1938,18 +2012,11 @@ def draw_collect_screen(
                   (cx, sp_cy + sp_r + 32), center=True)
 
     elif collect.phase == "done":
+        # Transient: poll() auto-calls start_auto_calibration(), so this is brief
         draw_text(surface, "PROCESSING COMPLETE", font_title, GREEN,
                   (cx, py + 40), center=True)
-        res_box = pygame.Rect(px, py + 110, pw, 80)
-        draw_round_rect(surface, res_box, (228, 248, 232), radius=14)
-        pygame.draw.rect(surface, GREEN, res_box, width=2, border_radius=14)
-        draw_text(surface, f"Saved → {collect.npz_out_path}",
-                  font_med, INK, res_box.center, center=True)
-        cont_r = pygame.Rect(cx - 200, panel.bottom - 74, 400, 52)
-        draw_round_rect(surface, cont_r, GREEN, radius=12)
-        draw_text(surface, "CONTINUE TO CALIBRATION", font_big, WHITE,
-                  cont_r.center, center=True)
-        rects["continue"] = cont_r
+        draw_text(surface, "Starting calibration...", font_big, INK,
+                  (cx, py + 130), center=True)
 
     elif collect.phase == "error":
         draw_text(surface, "PROCESSING FAILED", font_title, RED,
@@ -1966,12 +2033,59 @@ def draw_collect_screen(
         draw_text(surface, "RETRY", font_big, WHITE, retry_r.center, center=True)
         draw_round_rect(surface, skip_r, PANEL_ALT, radius=12)
         pygame.draw.rect(surface, (200, 188, 165), skip_r, width=2, border_radius=12)
-        draw_text(surface, "SKIP TO CALIBRATION", font_big, INK, skip_r.center, center=True)
+        draw_text(surface, "SKIP TO GAME", font_big, INK, skip_r.center, center=True)
         rects["retry"] = retry_r
         rects["skip"]  = skip_r
 
-    return rects
+    elif collect.phase == "calibrating":
+        draw_text(surface, "CALIBRATING...", font_title, INK, (cx, py + 50), center=True)
+        sp_cx, sp_cy, sp_r = cx, py + 180, 46
+        for i in range(12):
+            angle = math.radians(i * 30 - t * 200)
+            alpha = int(255 * (i + 1) / 12)
+            dot_s = pygame.Surface((12, 12), pygame.SRCALPHA)
+            pygame.draw.circle(dot_s, (*BLUE[:3], alpha), (6, 6), 5)
+            surface.blit(dot_s, (int(sp_cx + sp_r * math.cos(angle)) - 6,
+                                 int(sp_cy + sp_r * math.sin(angle)) - 6))
+        draw_text(surface, collect.progress_msg, font_med, (100, 90, 75),
+                  (cx, sp_cy + sp_r + 32), center=True)
+        draw_text(surface,
+                  "Training the neural decoder on your recorded session...",
+                  font_small, (140, 128, 108), (cx, sp_cy + sp_r + 74), center=True)
 
+    elif collect.phase == "calib_done":
+        draw_text(surface, "CALIBRATION COMPLETE", font_title, GREEN,
+                  (cx, py + 40), center=True)
+        res_box = pygame.Rect(cx - 360, py + 120, 720, 80)
+        draw_round_rect(surface, res_box, (228, 248, 232), radius=14)
+        pygame.draw.rect(surface, GREEN, res_box, width=2, border_radius=14)
+        draw_text(surface,
+                  f"N = {collect.calib_N}     θ = {collect.calib_theta:.3f}     "
+                  f"Bit rate = {collect.calib_B:.3f} bits/s",
+                  font_big, INK, res_box.center, center=True)
+        draw_text(surface, f"Config → {collect.calib_path}",
+                  font_small, (110, 100, 80), (cx, res_box.bottom + 24), center=True)
+        cont_r = pygame.Rect(cx - 220, panel.bottom - 74, 440, 52)
+        draw_round_rect(surface, cont_r, GREEN, radius=12)
+        draw_text(surface, "CONTINUE TO GAME", font_big, WHITE, cont_r.center, center=True)
+        rects["continue"] = cont_r
+
+    elif collect.phase == "calib_error":
+        draw_text(surface, "CALIBRATION FAILED", font_title, RED,
+                  (cx, py + 40), center=True)
+        err_box = pygame.Rect(px, py + 110, pw, 160)
+        draw_round_rect(surface, err_box, (248, 230, 230), radius=14)
+        pygame.draw.rect(surface, RED, err_box, width=2, border_radius=14)
+        for li, line in enumerate(collect.error_msg.strip().splitlines()[:5]):
+            draw_text(surface, line[:110], font_small, INK,
+                      (err_box.x + 14, err_box.y + 12 + li * 28))
+        skip_r2 = pygame.Rect(cx - 200, panel.bottom - 74, 400, 52)
+        draw_round_rect(surface, skip_r2, PANEL_ALT, radius=12)
+        pygame.draw.rect(surface, (200, 188, 165), skip_r2, width=2, border_radius=12)
+        draw_text(surface, "SKIP TO GAME", font_big, INK, skip_r2.center, center=True)
+        rects["skip"] = skip_r2
+
+    return rects
 
 
 def draw_calibration_screen(
@@ -2181,7 +2295,7 @@ def draw_intro_screen(
         draw_round_rect(surface, r, WHITE, radius=20)
         pygame.draw.rect(surface, (215, 202, 178), r, width=2, border_radius=20)
 
-    # ── Left panel: How to play + Controls ────────────────────
+    # ── Left panel: How to play ────────────────────────────────
     lx = left_rect.x + 28
     ly = left_rect.y + 24
 
@@ -2190,63 +2304,58 @@ def draw_intro_screen(
     ly += 58
 
     bullets = [
-        ("Goal",   "Match the controller input shown in the right panel."),
-        ("Practice",   "Practice pressing controller buttons without time pressure."),
-        ("Calibration", "Before the 1st trial, a brief calibration session will run."),
-        ("Trial",  "60-second timed run — maximize correct inputs."),
-        ("Score",  "Bit rate (bits/sec): information decoded per second."),
+        ("Goal",
+         "Use your gaming controller to make a funky dude dance! The cue panel on ",
+         "the right shows which controller input sequence you must make.",
+         "Match it as quickly and accurately as possible."),
+        ("Calibration",
+         "Before each session, a short recording is made while you respond",
+         "to practice cues on screen. This trains the decoder to recognize your",
+         "patterns for each button."),
+         ("Trial",
+         "60-second timed run — try to maximize the number of correct inputs."),
+        ("Score",
+         "Bit rate (bits/sec): how much information your performance",
+         "is successfully conveyed per second.", ""),
     ]
-    for label, desc in bullets:
+    for item in bullets:
+        label = item[0]
+        lines = [l for l in item[1:] if l]
         draw_text(surface, f"{label}:", font_med, ACCENT, (lx, ly))
-        draw_text(surface, desc, font_small, INK, (lx + 10, ly + 32))
-        ly += 62
-
-    ly += 18
-    draw_text(surface, "KEYBOARD CONTROLS", font_big, INK, (lx, ly))
-    pygame.draw.line(surface, (210, 198, 175), (lx, ly + 42), (left_rect.right - 28, ly + 42), 1)
-    ly += 58
-
-    for key, desc in [("SPACE", "Start the trial"), ("R", "Reset"), ("ESC", "Quit")]:
-        key_rect = pygame.Rect(lx, ly, 72, 28)
-        draw_round_rect(surface, key_rect, PANEL_ALT, radius=6)
-        pygame.draw.rect(surface, (200, 188, 165), key_rect, width=1, border_radius=6)
-        draw_text(surface, key, font_small, INK, key_rect.center, center=True)
-        draw_text(surface, desc, font_small, INK, (lx + 82, ly + 5))
-        ly += 38
+        ly += 34
+        for line in lines:
+            draw_text(surface, line, font_small, INK, (lx + 10, ly))
+            ly += 24
+        ly += 18
 
     # ── Right panel: Input alphabet ────────────────────────────
     rx = right_rect.x + 28
     ry = right_rect.y + 24
 
-    draw_text(surface, "INPUT OPTIONS", font_big, INK, (rx, ry))
+    draw_text(surface, "INPUT SYMBOLS", font_big, INK, (rx, ry))
     pygame.draw.line(surface, (210, 198, 175), (rx, ry + 42), (right_rect.right - 28, ry + 42), 1)
     ry += 58
 
     dirs = ["UP", "UPRIGHT", "RIGHT", "DOWNRIGHT", "DOWN", "DOWNLEFT", "LEFT", "UPLEFT"]
     col_w = (right_rect.w - 56) // 4
 
-    for stick_label, prefix, kb_hint in [
-        ("Left Joystick  (8 directions)", "L_", "Q W E / A _ D / Z X C"),
-        ("Right Joystick  (8 directions)", "R_", "U I O / J _ L / M , ."),
+    for stick_label, prefix in [
+        ("Left Joystick  (8 directions)", "L_"),
+        ("Right Joystick  (8 directions)", "R_"),
     ]:
         draw_text(surface, stick_label, font_med, BLUE, (rx, ry))
         ry += 32
         for i, d in enumerate(dirs):
             draw_text(surface, f"{prefix}{d}", font_small, INK,
                       (rx + (i % 4) * col_w, ry + (i // 4) * 26))
-        ry += 62
+        ry += 66
 
     draw_text(surface, "Buttons  (6)", font_med, BLUE, (rx, ry))
     ry += 32
-    btn_w = (right_rect.w - 56) // 6
-    for i, (b, k) in enumerate(zip(["A", "B", "X", "Y", "LB", "RB"], ["1", "2", "3", "4", "5", "6"])):
-        bx = rx + i * btn_w
-        btn_rect = pygame.Rect(bx, ry, btn_w - 6, 46)
-        draw_round_rect(surface, btn_rect, PANEL_ALT, radius=8)
-        pygame.draw.rect(surface, (200, 188, 165), btn_rect, width=1, border_radius=8)
-        draw_text(surface, b, font_med, INK, (bx + (btn_w - 6) // 2, ry + 6), center=True)
-        draw_text(surface, f"[{k}]", font_small, (150, 130, 100),
-                  (bx + (btn_w - 6) // 2, ry + 30), center=True)
+    btn_labels = ["A", "B", "X", "Y", "LB", "RB"]
+    col_w2 = (right_rect.w - 56) // 6
+    for i, b in enumerate(btn_labels):
+        draw_text(surface, b, font_med, INK, (rx + i * col_w2, ry))
 
     # ── Pulsing "Press SPACE to begin" ────────────────────────
     pulse = (math.sin(t * 2.5) + 1) / 2
@@ -2302,9 +2411,6 @@ def main() -> None:
     show_collect = False
     collect = CollectState()
     _collect_btn_rects: dict = {}
-    show_calib = False
-    calib = CalibState()
-    _calib_btn_rects: dict = {}
     running = True
     try:
         while running:
@@ -2325,8 +2431,6 @@ def main() -> None:
                         if collect.phase == "setup":
                             if event.key == pygame.K_ESCAPE:
                                 show_collect = False
-                                show_calib = True
-                                calib.refresh_files()
                         elif collect.phase in ("countdown", "sync_prompt", "sync_wait",
                                                "sync_release", "cueing"):
                             if event.key == pygame.K_ESCAPE:
@@ -2343,43 +2447,12 @@ def main() -> None:
                                     collect.h5_files[collect.selected_h5])
                             elif event.key == pygame.K_ESCAPE:
                                 show_collect = False
-                                show_calib = True
-                                calib.refresh_files()
-                        elif collect.phase in ("done", "error"):
+                        elif collect.phase in ("calib_done", "calib_error"):
                             if event.key == pygame.K_SPACE:
                                 show_collect = False
-                                show_calib = True
-                                calib.refresh_files()
-                    elif show_calib:
-                        if calib.phase == "setup":
-                            if calib.active_field == "player":
-                                if event.key == pygame.K_BACKSPACE:
-                                    calib.player_name = calib.player_name[:-1]
-                                elif event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_DOWN):
-                                    calib.active_field = "files"
-                                elif event.unicode and len(calib.player_name) < CALIB_MAX_NAME:
-                                    calib.player_name += event.unicode
-                            elif calib.active_field == "files":
-                                if event.key == pygame.K_UP:
-                                    calib.selected_file = max(0, calib.selected_file - 1)
-                                    calib.file_scroll = min(calib.file_scroll, calib.selected_file)
-                                elif event.key == pygame.K_DOWN and calib.npz_files:
-                                    calib.selected_file = min(len(calib.npz_files) - 1, calib.selected_file + 1)
-                                    if calib.selected_file >= calib.file_scroll + CALIB_FILE_ROWS:
-                                        calib.file_scroll += 1
-                                elif event.key in (pygame.K_TAB,):
-                                    calib.active_field = "player"
-                                elif event.key == pygame.K_RETURN and calib.npz_files:
-                                    calib.start_calibration()
-                            if event.key == pygame.K_LEFT:
-                                calib.arch_idx = (calib.arch_idx - 1) % len(ARCH_CHOICES)
-                            elif event.key == pygame.K_RIGHT:
-                                calib.arch_idx = (calib.arch_idx + 1) % len(ARCH_CHOICES)
-                            elif event.key == pygame.K_SPACE:
-                                show_calib = False
-                        elif calib.phase in ("done", "error"):
-                            if event.key == pygame.K_SPACE:
-                                show_calib = False
+                        elif collect.phase == "error":
+                            if event.key == pygame.K_ESCAPE:
+                                show_collect = False
                     elif event.key == pygame.K_SPACE:
                         state.start()
                     elif event.key == pygame.K_r:
@@ -2397,62 +2470,22 @@ def main() -> None:
                                     collect.start_session()
                                 elif name == "skip":
                                     show_collect = False
-                                    show_calib = True
-                                    calib.refresh_files()
-                                elif name == "trials_minus":
-                                    collect.n_trials = max(50, collect.n_trials - 50)
-                                elif name == "trials_plus":
-                                    collect.n_trials = min(5000, collect.n_trials + 50)
+                                elif name.startswith("trials_") and name[7:].isdigit():
+                                    collect.n_trials = int(name[7:])
                                 elif name == "isi_minus":
                                     collect.isi_s = round(max(0.3, collect.isi_s - 0.1), 1)
                                 elif name == "isi_plus":
                                     collect.isi_s = round(min(3.0, collect.isi_s + 0.1), 1)
-                                elif name == "alph_left":
-                                    names = list(COLLECT_ALPHABETS.keys())
-                                    i = names.index(collect.alphabet_name)
-                                    collect.alphabet_name = names[(i - 1) % len(names)]
-                                elif name == "alph_right":
-                                    names = list(COLLECT_ALPHABETS.keys())
-                                    i = names.index(collect.alphabet_name)
-                                    collect.alphabet_name = names[(i + 1) % len(names)]
                                 elif name == "process":
                                     collect.start_processing(
                                         collect.json_out_path,
                                         collect.h5_files[collect.selected_h5])
                                 elif name == "continue":
                                     show_collect = False
-                                    show_calib = True
-                                    if collect.npz_out_path:
-                                        calib.npz_files = [collect.npz_out_path]
-                                    else:
-                                        calib.refresh_files()
                                 elif name == "retry":
                                     collect.phase = "h5_select"
-                                elif name.startswith("h5_"):
+                                elif name.startswith("h5_") and name[3:].isdigit():
                                     collect.selected_h5 = int(name[3:])
-                                break
-                    elif show_calib:
-                        for name, rect in _calib_btn_rects.items():
-                            if rect.collidepoint(event.pos):
-                                if name == "run":
-                                    calib.start_calibration()
-                                elif name == "skip":
-                                    show_calib = False
-                                elif name == "continue":
-                                    show_calib = False
-                                elif name == "retry":
-                                    calib.phase = "setup"
-                                elif name == "arch_left":
-                                    calib.arch_idx = (calib.arch_idx - 1) % len(ARCH_CHOICES)
-                                elif name == "arch_right":
-                                    calib.arch_idx = (calib.arch_idx + 1) % len(ARCH_CHOICES)
-                                elif name == "player_field":
-                                    calib.active_field = "player"
-                                elif name in ("files_area",):
-                                    calib.active_field = "files"
-                                elif name.startswith("file_"):
-                                    calib.selected_file = int(name[5:])
-                                    calib.active_field = "files"
                                 break
                     elif reset_btn_rect is not None and reset_btn_rect.collidepoint(event.pos):
                         state.reset()
@@ -2464,19 +2497,10 @@ def main() -> None:
 
             if show_collect:
                 update_collect_timing(collect)
-                if collect.phase == "processing":
+                if collect.phase in ("processing", "done", "calibrating"):
                     collect.poll()
                 _collect_btn_rects = draw_collect_screen(
                     screen, now, collect, font_title, font_big, font_med, font_small, font_cue
-                )
-                pygame.display.flip()
-                continue
-
-            if show_calib:
-                if calib.phase == "running":
-                    calib.poll()
-                _calib_btn_rects = draw_calibration_screen(
-                    screen, now, calib, font_title, font_big, font_med, font_small
                 )
                 pygame.display.flip()
                 continue
