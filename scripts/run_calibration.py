@@ -120,12 +120,23 @@ def _find_optimal_n(measured_ns, measured_accs, rt_s):
     if len(measured_ns) < 2:
         raise ValueError(f"Need >=2 measured N values, got {len(measured_ns)}")
 
-    hh = fit_hick_hyman(measured_ns, measured_accs)
+    hh = fit_hick_hyman(measured_ns, measured_accs, rt_s=rt_s)
     n_grid = list(range(2, 15))
     curve = predict_bitrate_curve(hh, n_grid, rt_s)
 
-    best = max(curve, key=lambda c: c["bitrate"])
-    n_star = min(GROUPINGS, key=lambda n: abs(n - best["n"]))
+    # Snap the continuous N* to the nearest measured grouping
+    n_star = min(GROUPINGS, key=lambda n: abs(n - hh.n_star))
+
+    print(f"  OLS:   p0={hh.p0:.3f}  c={hh.c:.4f}  R²={hh.r2:.3f}")
+    print(f"  N* analytic (parabola vertex) = {hh.n_star_analytic}")
+    print(f"  N* sweep    (argmax B(N))     = {hh.n_star_sweep}")
+    if hh.safety_fallback:
+        print(f"  ⚠ Safety fallback triggered (accuracy < 0.75 at sweep N*)")
+    if hh.bayes_n_star is not None:
+        agree = "✓" if hh.bayes_n_star == hh.n_star_sweep else "⚠ disagree"
+        print(f"  Bayes: p0={hh.bayes_p0:.3f}  c={hh.bayes_c:.4f}  N*={hh.bayes_n_star}  [{agree}]")
+    print(f"  → snapped to measured grouping N*={n_star}")
+
     return hh, curve, n_star
 
 
@@ -213,47 +224,185 @@ def _tune_theta(Xf, y, symbol_ids, seed, rt_s):
     return best_theta, best_b, best_C, n_heldout
 
 
-def _make_plot(path, curve, n_star, measured_ns, measured_accs, contribs, sym_ids):
-    """Two-panel PNG: B(N) curve + per-symbol break-even bars."""
+def _make_plot(
+    path, curve, n_star, measured_ns, measured_accs,
+    contribs, sym_ids, hh, confusion_at_n_star, rt_s,
+):
+    """
+    Four-panel calibration report:
+      [0,0] B(N) curve  – OLS + Bayesian overlay, analytic N* and sweep N* marked
+      [0,1] Confusion matrix heatmap at N* (row-normalised)
+      [1,0] Per-symbol break-even bars  – green=keep, red=prune
+      [1,1] Speed-accuracy operating point on iso-bit-rate curves
+    """
     import matplotlib
-
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import numpy as np
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("BCI Calibration Analytics", fontsize=14, fontweight="bold", y=1.01)
 
-    # Left: B(N) curve
-    ns = [c["n"] for c in curve]
-    bs = [c["bitrate"] for c in curve]
-    ax1.plot(ns, bs, "b-o", label="B_pred(N)")
-    ax1.axvline(n_star, color="r", ls="--", label=f"N*={n_star}")
-    ax1b = ax1.twinx()
-    ax1b.scatter(
-        measured_ns, measured_accs, c="orange", marker="s", zorder=5, label="measured acc"
-    )
-    ax1.set_xlabel("N")
-    ax1.set_ylabel("Bitrate (bits/s)")
-    ax1b.set_ylabel("Accuracy")
-    ax1.legend(loc="upper left")
-    ax1b.legend(loc="upper right")
-    ax1.set_title("Predicted Bitrate Curve")
+    # ── [0,0] B(N) curve ──────────────────────────────────────────────────────
+    ax = axes[0, 0]
+    ns  = [c["n"] for c in curve]
+    bs  = [c["bitrate"] for c in curve]
+    acs = [c["accuracy"] for c in curve]
 
-    # Right: per-symbol bars
+    ax.plot(ns, bs, "b-o", ms=4, label="B̂(N) – OLS")
+
+    # Bayesian overlay (if parameters available)
+    if hh.bayes_p0 is not None and hh.bayes_c is not None:
+        bs_bayes = [
+            np.log2(max(n - 1, 1))
+            * max(2 * max(0, min(1, hh.bayes_p0 - hh.bayes_c * np.log2(n))) - 1, 0)
+            / rt_s
+            for n in ns
+        ]
+        ax.plot(ns, bs_bayes, "m--", lw=1.2, alpha=0.7, label="B̂(N) – Bayes")
+
+    # Mark N* lines
+    ax.axvline(hh.n_star_sweep, color="red",    ls="--", lw=1.5,
+               label=f"N* sweep = {hh.n_star_sweep}")
+    ax.axvline(hh.n_star_analytic, color="darkorange", ls=":", lw=1.5,
+               label=f"N* analytic = {hh.n_star_analytic}")
+    if hh.bayes_n_star and hh.bayes_n_star != hh.n_star_sweep:
+        ax.axvline(hh.bayes_n_star, color="purple", ls="-.", lw=1.2,
+                   label=f"N* Bayes = {hh.bayes_n_star}")
+
+    ax2b = ax.twinx()
+    ax2b.scatter(measured_ns, measured_accs, c="orange", marker="s",
+                 zorder=5, s=60, label="Measured acc")
+    ax2b.plot(ns, acs, "orange", lw=1, alpha=0.4)
+    ax2b.set_ylabel("Accuracy p(N)", color="darkorange")
+    ax2b.tick_params(axis="y", labelcolor="darkorange")
+    ax2b.set_ylim(0.4, 1.05)
+
+    ax.set_xlabel("Alphabet size N")
+    ax.set_ylabel("Bit rate (bits/s)")
+    ax.set_title("B(N) Curve — Optimal Alphabet Size")
+    lines1, lbl1 = ax.get_legend_handles_labels()
+    lines2, lbl2 = ax2b.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, lbl1 + lbl2, fontsize=7, loc="upper left")
+
+    if hh.safety_fallback:
+        ax.text(0.98, 0.05, "⚠ safety fallback active",
+                transform=ax.transAxes, ha="right", color="red", fontsize=8)
+
+    # ── [0,1] Confusion matrix ────────────────────────────────────────────────
+    ax = axes[0, 1]
+    C = np.array(confusion_at_n_star, dtype=float)
+    if C.size > 0 and C.sum() > 0:
+        row_sums = C.sum(axis=1, keepdims=True)
+        C_norm = np.divide(C, row_sums, where=row_sums > 0)
+        im = ax.imshow(C_norm, vmin=0, vmax=1, cmap="Blues", aspect="auto")
+        plt.colorbar(im, ax=ax, fraction=0.046, label="p(predicted | true)")
+
+        n_sym = C.shape[0]
+        sym_labels = [str(s) for s in sym_ids[:n_sym]] if sym_ids else [str(i) for i in range(n_sym)]
+        ax.set_xticks(range(n_sym))
+        ax.set_yticks(range(n_sym))
+        ax.set_xticklabels(sym_labels, rotation=45, ha="right", fontsize=7)
+        ax.set_yticklabels(sym_labels, fontsize=7)
+
+        # Annotate cells with p values
+        for i in range(n_sym):
+            for j in range(n_sym):
+                val = C_norm[i, j]
+                if val > 0.01:
+                    ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                            fontsize=6, color="white" if val > 0.55 else "black")
+
+        # Diagonal accuracy overlay
+        diag_acc = np.trace(C) / C.sum()
+        ax.set_title(f"Confusion Matrix — N={C.shape[0]}  (acc={diag_acc:.1%})")
+    else:
+        ax.text(0.5, 0.5, "No confusion data", ha="center", va="center",
+                transform=ax.transAxes)
+        ax.set_title("Confusion Matrix")
+    ax.set_xlabel("Predicted symbol")
+    ax.set_ylabel("True symbol")
+
+    # ── [1,0] Per-symbol break-even bars ──────────────────────────────────────
+    ax = axes[1, 0]
     if contribs:
-        vals = [c["contribution"] for c in contribs]
-        colors = ["green" if c["keep"] else "red" for c in contribs]
+        vals   = [c["contribution"] for c in contribs]
+        colors = ["#2ecc71" if c["keep"] else "#e74c3c" for c in contribs]
         labels = [
             str(sym_ids[c["class"]]) if c["class"] < len(sym_ids) else str(c["class"])
             for c in contribs
         ]
-        ax2.bar(range(len(vals)), vals, color=colors, tick_label=labels)
-        ax2.axhline(0, color="k", lw=0.5)
-        ax2.set_xlabel("Symbol")
-        ax2.set_ylabel("Bit contribution")
-        ax2.set_title(f"Per-symbol Break-even (N={n_star})")
+        x_pos = range(len(vals))
+        ax.bar(x_pos, vals, color=colors, edgecolor="white", lw=0.5)
+        ax.axhline(0, color="black", lw=0.8)
+        ax.set_xticks(list(x_pos))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xlabel("Symbol")
+        ax.set_ylabel("Marginal bit-rate contribution (bits/s)")
+        ax.set_title(
+            f"Per-symbol Break-even — N={n_star}\n"
+            "Green = net positive (keep)  |  Red = net negative (prune)"
+        )
+        # Annotation: how many pruned
+        n_pruned = sum(1 for c in contribs if not c["keep"])
+        if n_pruned:
+            ax.text(0.98, 0.98, f"{n_pruned} symbol(s) below break-even",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=8, color="#e74c3c")
+    else:
+        ax.text(0.5, 0.5, "No contribution data", ha="center", va="center",
+                transform=ax.transAxes)
+
+    # ── [1,1] Speed-accuracy operating point on iso-bit-rate curves ───────────
+    ax = axes[1, 1]
+    p_grid = np.linspace(0.51, 1.0, 200)   # accuracy axis
+    r_grid = np.linspace(0.0, 2.0 / rt_s, 200)  # selections/s axis
+    P, R = np.meshgrid(p_grid, r_grid)
+
+    # Draw iso-bit-rate contours for each measured N at its N*
+    # B = log2(N-1) * R * (2p-1)
+    # We show contours for B = 1, 2, 3, ... bits/s (alphabet-agnostic)
+    b_levels = [0.5, 1, 2, 3, 4, 5, 6, 8]
+    for b_target in b_levels:
+        # R = B / (2p - 1) for the B-agnostic version (log2(N-1) absorbed into y-axis)
+        r_iso = b_target / np.maximum(2 * p_grid - 1, 1e-6)
+        r_iso = np.clip(r_iso, 0, r_grid.max())
+        ax.plot(p_grid, r_iso, "lightgray", lw=0.8, zorder=1)
+        # Label at right edge
+        right_r = b_target / max(2 * p_grid[-1] - 1, 1e-6)
+        if right_r <= r_grid.max():
+            ax.text(p_grid[-1] + 0.002, right_r, f"{b_target}b/s",
+                    fontsize=6, va="center", color="gray")
+
+    # Plot each measured operating point (one per N)
+    cmap = plt.cm.get_cmap("tab10", len(measured_ns))
+    for idx, (n, p, acc) in enumerate(zip(measured_ns, measured_accs, measured_accs)):
+        r_meas = 1.0 / rt_s  # fixed ISI → fixed rate
+        # effective bitrate at this operating point
+        b_eff = np.log2(max(n - 1, 1)) * r_meas * max(2 * p - 1, 0)
+        ax.scatter(p, r_meas, color=cmap(idx), s=90, zorder=5,
+                   label=f"N={n}  B={b_eff:.2f} b/s")
+        ax.annotate(f"N={n}", (p, r_meas),
+                    textcoords="offset points", xytext=(6, 4),
+                    fontsize=7, color=cmap(idx))
+
+    # Mark N* operating point
+    p_nstar = max(0.0, min(1.0, hh.p0 - hh.c * np.log2(n_star)))
+    r_nstar = 1.0 / rt_s
+    b_nstar = np.log2(max(n_star - 1, 1)) * r_nstar * max(2 * p_nstar - 1, 0)
+    ax.scatter(p_nstar, r_nstar, marker="*", s=220, color="red", zorder=6,
+               label=f"N*={n_star}  B={b_nstar:.2f} b/s")
+
+    ax.set_xlim(0.5, 1.02)
+    ax.set_ylim(0, r_grid.max() * 1.05)
+    ax.set_xlabel("Accuracy p(N)")
+    ax.set_ylabel("Selection rate R (selections/s)")
+    ax.set_title("Speed–Accuracy Operating Point\n(iso-bit-rate curves)")
+    ax.legend(fontsize=7, loc="upper left")
 
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
+    plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Plot -> {path}")
 
@@ -335,7 +484,14 @@ def main(argv=None):
         "mi_bits": mi["mi"],
         "mi_uncorrected_bits": mi["mi_uncorrected"],
         "mi_bias": mi["bias"],
-        "hick_hyman": {"p0": hh.p0, "c": hh.c, "r2": hh.r2},
+        "hick_hyman": {
+            "p0": hh.p0, "c": hh.c, "r2": hh.r2,
+            "n_star_analytic": hh.n_star_analytic,
+            "n_star_sweep": hh.n_star_sweep,
+            "safety_fallback": hh.safety_fallback,
+            "bayes_p0": hh.bayes_p0, "bayes_c": hh.bayes_c,
+            "bayes_n_star": hh.bayes_n_star,
+        },
         "rt_s": rt_s,
         "measured_ns": measured_ns,
         "measured_accs": measured_accs,
@@ -351,8 +507,12 @@ def main(argv=None):
 
     # 10. Plot
     if args.plot:
+        # Use the confusion matrix at N* (pre-theta, so cell counts are richer)
+        C_for_plot = confusions.get(n_star, C_accepted)
         _make_plot(
-            args.plot, curve, n_star, measured_ns, measured_accs, contribs, GROUPINGS[n_star]
+            args.plot, curve, n_star, measured_ns, measured_accs,
+            contribs, GROUPINGS.get(n_star, list(range(n_star))),
+            hh, C_for_plot.tolist(), rt_s,
         )
 
     print("=== Done ===")
