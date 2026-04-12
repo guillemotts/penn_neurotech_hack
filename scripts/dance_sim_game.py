@@ -224,7 +224,9 @@ class GameState:
         elapsed = self.elapsed()
         if elapsed <= 0:
             return 0.0
-        return math.log2(N) * (self.total_inputs - self.incorrect_inputs) / elapsed
+        Sc = self.total_inputs - self.incorrect_inputs
+        Si = self.incorrect_inputs
+        return math.log2(N - 1) * max(Sc - Si, 0) / elapsed
 
     def process_input(self, action: str) -> bool | None:
         if not self.running or self.trial_ended or not self.prompt_queue:
@@ -884,15 +886,50 @@ def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> t
     stick_inner_color = (120, 110, 96)
     button_color = (200, 188, 164)
 
-    # Main rectangular controller body
+    # Main body rect — kept for button/stick position calculations only
     main_body = pygame.Rect(
         body.x + int(body.w * 0.05),
         body.y + int(body.h * 0.16),
         int(body.w * 0.90),
         int(body.h * 0.62),
     )
-    pygame.draw.rect(surface, base_color, main_body, border_radius=34)
-    pygame.draw.rect(surface, edge_color, main_body, width=3, border_radius=34)
+
+    # Controller silhouette: rounded top + two oval grip handles below
+    mx, my, mw, mh = main_body.x, main_body.y, main_body.w, main_body.h
+    cr  = int(mw * 0.09)   # top corner radius
+    ew  = int(mw * 0.23)   # grip ellipse x-radius  (lgx-ew = mx, rgx+ew = mx+mw)
+    eh  = int(mh * 0.44)   # grip ellipse y-radius
+    lgx = mx + ew           # left  grip center x
+    rgx = mx + mw - ew     # right grip center x
+    gcy = my + mh           # grip ellipse center y (= bottom of main body)
+
+    def _arc(cx, cy, rx, ry, a0, a1, n=10):
+        return [
+            (int(cx + rx * math.cos(math.radians(a0 + (a1 - a0) * i / n))),
+             int(cy + ry * math.sin(math.radians(a0 + (a1 - a0) * i / n))))
+            for i in range(n + 1)
+        ]
+
+    # Build clockwise polygon
+    ctrl_pts  = []
+    ctrl_pts += _arc(mx + cr,      my + cr, cr, cr, 180, 270, n=6)   # top-left corner
+    ctrl_pts += _arc(mx + mw - cr, my + cr, cr, cr, 270, 360, n=6)   # top-right corner
+    ctrl_pts.append((mx + mw, gcy))                                    # right side bottom
+    ctrl_pts += _arc(rgx, gcy, ew, eh, 0, 180, n=14)                 # right grip (right→bottom→left)
+    # Concave notch between grips (three upward points)
+    rim  = rgx - ew          # = mx + mw - 2*ew  (right inner edge)
+    lim  = lgx + ew          # = mx + 2*ew        (left  inner edge)
+    midx = (rim + lim) // 2
+    ctrl_pts += [
+        ((rim + midx) // 2,  int(gcy - eh * 0.32)),
+        (midx,               int(gcy - eh * 0.58)),
+        ((midx + lim) // 2,  int(gcy - eh * 0.32)),
+    ]
+    ctrl_pts += _arc(lgx, gcy, ew, eh, 0, 180, n=14)                 # left grip  (right→bottom→left)
+    # polygon auto-closes: last point (mx, gcy) → first point (mx, my+cr) = left side
+
+    pygame.draw.polygon(surface, base_color, ctrl_pts)
+    pygame.draw.polygon(surface, edge_color, ctrl_pts, width=3)
 
     # LB / RB shoulder buttons
     shoulder_w = int(main_body.w * 0.24)
