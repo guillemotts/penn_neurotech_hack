@@ -40,6 +40,24 @@ def load_h5(h5_path: Path) -> tuple:
     """
     with h5py.File(h5_path, "r") as f:
         keys = list(f.keys())
+        if "acquisition" in f and "ElectricalSeries" in f["acquisition"]:
+            ds = f["acquisition/ElectricalSeries"]
+            ts_ds = f["acquisition/timestamp_ns"]
+            fs_hz = float(f.attrs.get("sample_rate_hz", 32000.0))
+            n_channels = 76  # hard training mode
+            total = ds.shape[0]
+            n_frames = total // n_channels
+            # Read in 10s chunks
+            chunk_frames = int(10 * fs_hz)
+            parts = []
+            for i in range(0, n_frames, chunk_frames):
+                end_f = min(i + chunk_frames, n_frames)
+                flat = ds[i*n_channels:end_f*n_channels]
+                parts.append(flat.reshape(-1, n_channels).T.astype(np.float32))
+            neural = np.concatenate(parts, axis=1)
+            ts = ts_ds[:n_frames].astype(np.int64)
+            samples_per_frame = 1  # flat layout, one sample per "frame" position
+            return neural, ts, samples_per_frame, fs_hz
         if "frames" in f and "frame_timestamps_ns" in f:
             frames = f["frames"][:]
             ts = f["frame_timestamps_ns"][:].astype(np.int64)
@@ -120,7 +138,7 @@ def align_and_build_session(
     sync_prompt_mono = int(cues["sync_gesture"]["prompt_t_mono_ns"])
     sync_release_mono = int(cues["sync_gesture"]["release_t_mono_ns"])
     hold_s = (sync_release_mono - sync_prompt_mono) / 1e9
-    min_hold = max(1.2, hold_s - 0.3)
+    min_hold = max(0.8, hold_s - 0.8)
     _, edge_hw_ns, _ = detect_lb_edge(neural, fs_hz, frame_ts_ns, spf, min_hold_s=min_hold)
     offset_ns = edge_hw_ns - sync_prompt_mono
     cue_times_ns = np.array(
