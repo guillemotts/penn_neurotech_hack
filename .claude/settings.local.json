@@ -72,7 +72,8 @@
       "Bash(synapsectl read --help 2>&1)",
       "Bash(echo \"SCIFI=$SCIFI\")",
       "Bash(python -m pytest tests/test_run_cues.py -v 2>&1)",
-      "Bash(python -m pytest tests/test_load_h5_session.py -v 2>&1)"
+      "Bash(python -m pytest tests/test_load_h5_session.py -v 2>&1)",
+      "Bash(python3 -c ':*)"
     ]
   }
 }
