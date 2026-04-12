@@ -106,10 +106,7 @@ CALIB_CONFIG_DIR = _SCRIPT_DIR.parent / "data" / "configs"
 CALIB_FILE_ROWS = 7
 CALIB_MAX_NAME  = 32
 
-CALIB_H5_ROOTS = [
-    _SCRIPT_DIR.parent / "data" / "raw",
-    Path("data") / "raw",
-]
+
 COLLECT_N_TRIALS_DEFAULT = 500
 COLLECT_ISI_DEFAULT      = 0.8
 COLLECT_ALPHABETS = {
@@ -121,7 +118,7 @@ COLLECT_ALPHABETS = {
 _COLLECT_SYMBOLS = (
     [("ljoy", k) for k in range(8)]
     + [("rjoy", k) for k in range(8)]
-    + [("button", name) for name in ["UP", "DOWN", "LEFT", "RIGHT", "LB", "RB"]]
+    + [("button", name) for name in ["Y", "A", "X", "B", "LB", "RB"]]
 )
 
 # ── Synapse decoded-controls tap ───────────────────────────────────────────────
@@ -365,7 +362,7 @@ class CollectState:
 
     # ── Phase state machine ────────────────────────────────────────────────────
     # "setup" | "countdown" | "sync_prompt" | "sync_wait" | "sync_release"
-    # | "cueing" | "h5_select" | "processing" | "done" | "error"
+    # | "cueing" | "collect_done" | "error"
     # | "calibrating" | "calib_done" | "calib_error"
     phase: str = "setup"
     # calibration sub-results (populated after auto-calibration)
@@ -389,24 +386,11 @@ class CollectState:
     _phase_start_ns: int  = 0   # when the current phase began
     _next_change_ns: int  = 0   # when to advance to next cue / sub-phase
 
-    # ── H5 pairing ────────────────────────────────────────────────────────────
-    h5_files: list = field(default_factory=list)
-    selected_h5: int = 0
-    active_h5_field: str = "list"
-
     # ── Processing output ──────────────────────────────────────────────────────
     npz_out_path: Path | None = None
     progress_msg: str = ""
     error_msg: str    = ""
     _msg_queue: queue.Queue = field(default_factory=queue.Queue)
-
-    def refresh_h5_files(self) -> None:
-        found: list[Path] = []
-        for root in CALIB_H5_ROOTS:
-            if root.exists():
-                found.extend(sorted(root.rglob("*.h5")))
-        self.h5_files = found
-        self.selected_h5 = min(self.selected_h5, max(0, len(self.h5_files) - 1))
 
     def poll(self) -> None:
         while True:
@@ -419,8 +403,6 @@ class CollectState:
             elif kind == "done":
                 self.npz_out_path = payload
                 self.phase = "done"
-                # Automatically start calibration with the processed file
-                self.start_auto_calibration()
             elif kind == "error":
                 self.error_msg = payload
                 self.phase = "error"
@@ -446,15 +428,6 @@ class CollectState:
         self.json_out_path = _SCRIPT_DIR.parent / "data" / "cue_logs" / f"cues_{ts}.json"
         self.phase = "countdown"
         self._phase_start_ns = time.monotonic_ns()
-
-    def start_processing(self, json_path: Path, h5_path: Path) -> None:
-        self.phase = "processing"
-        self.progress_msg = "Starting..."
-        threading.Thread(
-            target=_process_h5_worker,
-            args=(self, json_path, h5_path),
-            daemon=True,
-        ).start()
 
     def start_auto_calibration(self) -> None:
         self.phase = "calibrating"
@@ -552,7 +525,7 @@ def _calib_worker(calib: CalibState) -> None:
 
 
 def _finish_cueing(collect: CollectState) -> None:
-    """Save JSON cue log and move to h5_select phase."""
+    """Save JSON cue log and show collect_done screen."""
     import json as _json
     from run_cues import build_log as _build_log
     alphabet = COLLECT_ALPHABETS[collect.alphabet_name]
@@ -570,8 +543,7 @@ def _finish_cueing(collect: CollectState) -> None:
     collect.json_out_path.parent.mkdir(parents=True, exist_ok=True)
     with collect.json_out_path.open("w") as _f:
         _json.dump(log, _f, indent=2)
-    collect.refresh_h5_files()
-    collect.phase = "h5_select"
+    collect.phase = "collect_done"
 
 
 def update_collect_timing(collect: CollectState) -> None:
@@ -636,42 +608,6 @@ def _show_next_cue(collect: CollectState, now_ns: int) -> None:
     collect.display_sym_idx = int(sym_idx)
     collect.current_trial += 1
     collect._next_change_ns = cue_t + int(collect.isi_s * 1e9)
-
-
-def _process_h5_worker(collect: CollectState, json_path: Path, h5_path: Path) -> None:
-    """Background thread: run load_h5_session alignment + extraction → .npz."""
-    q = collect._msg_queue
-    try:
-        q.put(("progress", "Importing processing modules..."))
-        try:
-            import sys as _sys
-            import numpy as _np
-            _sys.path.insert(0, str(_SCRIPT_DIR))
-            from load_h5_session import align_and_build_session, extract_windows
-        except ImportError as exc:
-            q.put(("error", f"Import failed: {exc}\nEnsure h5py is installed."))
-            return
-
-        q.put(("progress", f"Aligning {h5_path.name} with cue log..."))
-        sess = align_and_build_session(h5_path, json_path)
-        q.put(("progress",
-               f"Loaded  fs={sess.fs_hz:.0f} Hz  shape={sess.neural.shape}  "
-               f"n_cues={len(sess.cue_times_ns)}"))
-
-        q.put(("progress", "Extracting trial windows..."))
-        X, y, kept = extract_windows(sess, w_post_ms=400.0, onset_offset_ms=150.0)
-        q.put(("progress", f"Extracted {X.shape[0]}/{len(sess.cue_times_ns)} trials"))
-
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        out = _SCRIPT_DIR.parent / "data" / "processed" / f"session_{ts}.npz"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        _np.savez(out, raw=X, stick_xy=y, fs_hz=sess.fs_hz,
-                  clock_offset_ns=sess.clock_offset_ns)
-        q.put(("done", out))
-    except Exception:
-        import traceback as _tb
-        q.put(("error", _tb.format_exc()))
-
 
 
 def _auto_calib_worker(collect: "CollectState") -> None:
@@ -1736,9 +1672,9 @@ def _cue_highlight_color(sym_type: str, sym_val) -> tuple:
     if sym_type == "rjoy":
         return _CUE_RIGHT
     if sym_type == "button":
-        if sym_val in ("LEFT", "LB"):
+        if sym_val in ("X", "LB"):
             return _CUE_LEFT
-        if sym_val in ("RIGHT", "RB"):
+        if sym_val in ("B", "RB"):
             return _CUE_RIGHT
     return _CUE_VERT
 
@@ -1752,9 +1688,10 @@ def _draw_cue(surface: pygame.Surface, sym_idx: int, font_cue: pygame.font.Font)
 
     if sym_type in ("ljoy", "rjoy"):
         label = "LEFT STICK" if sym_type == "ljoy" else "RIGHT STICK"
-        lbl = font_cue.render(label, True, hi)
-        surface.blit(lbl, (cx - lbl.get_width() // 2, cy - 280))
+        font_label = pygame.font.SysFont("arial", 36, bold=True)
+        lbl = font_label.render(label, True, hi)
         r = 180
+        surface.blit(lbl, (cx - lbl.get_width() // 2, cy - r - lbl.get_height() - 16))
         for k in range(8):
             a0 = math.radians(k * 45 - 22.5)
             a1 = math.radians((k + 1) * 45 - 22.5)
@@ -1916,63 +1853,16 @@ def draw_collect_screen(
         rects["start"] = start_r
         rects["skip"]  = skip_r
 
-    elif collect.phase == "h5_select":
-        draw_text(surface, "PAIR NEURAL RECORDING  (.h5)", font_big, INK, (px, py))
-        pygame.draw.line(surface, (210, 198, 175), (px, py + 42), (px + pw, py + 42), 1)
-        hy = py + 58
-
-        draw_text(surface,
-                  f"Cue log saved to:  {collect.json_out_path}",
-                  font_small, GREEN, (px, hy))
-        hy += 32
-        draw_text(surface,
-                  "Select the .h5 file recorded simultaneously by Synapse:",
-                  font_med, INK, (px, hy))
-        hy += 38
-        row_h = 38
-        visible = min(CALIB_FILE_ROWS, len(collect.h5_files))
-
-        if not collect.h5_files:
-            no_r = pygame.Rect(px, hy, pw, row_h * 2)
-            draw_round_rect(surface, no_r, PANEL_ALT, radius=8)
-            draw_text(surface, "No .h5 files found — check CALIB_H5_ROOTS",
-                      font_small, RED, no_r.center, center=True)
-        else:
-            fa = pygame.Rect(px, hy, pw, visible * row_h + 8)
-            draw_round_rect(surface, fa, PANEL_ALT, radius=8)
-            pygame.draw.rect(surface, (200, 150, 50), fa, width=2, border_radius=8)
-            rects["h5_list"] = fa
-            for i in range(visible):
-                fi = i
-                if fi >= len(collect.h5_files):
-                    break
-                rr = pygame.Rect(px + 4, hy + 4 + i * row_h, pw - 8, row_h - 2)
-                if fi == collect.selected_h5:
-                    draw_round_rect(surface, rr, GLOW, radius=6)
-                p = collect.h5_files[fi]
-                try:
-                    disp = str(p.relative_to(_SCRIPT_DIR.parent))
-                except ValueError:
-                    disp = str(p)
-                marker = "► " if fi == collect.selected_h5 else "  "
-                draw_text(surface, marker + disp, font_small,
-                          INK if fi == collect.selected_h5 else (110, 100, 80),
-                          (rr.x + 10, rr.y + 10))
-                rects[f"h5_{fi}"] = rr
-
-        bty = panel.bottom - 74
-        pygame.draw.line(surface, (210, 198, 175), (px, bty - 18), (px + pw, bty - 18), 1)
-        proc_r = pygame.Rect(px, bty, int(pw * 0.56), 52)
-        skip_r = pygame.Rect(proc_r.right + 16, bty, pw - proc_r.w - 16, 52)
-        can_proc = bool(collect.h5_files)
-        draw_round_rect(surface, proc_r, BLUE if can_proc else (180, 180, 180), radius=12)
-        draw_text(surface, "PROCESS + CALIBRATE", font_big, WHITE, proc_r.center, center=True)
-        draw_round_rect(surface, skip_r, PANEL_ALT, radius=12)
-        pygame.draw.rect(surface, (200, 188, 165), skip_r, width=2, border_radius=12)
-        draw_text(surface, "SKIP TO GAME", font_big, INK, skip_r.center, center=True)
-        if can_proc:
-            rects["process"] = proc_r
-        rects["skip"] = skip_r
+    elif collect.phase == "collect_done":
+        draw_text(surface, "COLLECTION COMPLETE", font_title, GREEN, (cx, py + 60), center=True)
+        draw_text(surface, f"Cue log saved to:", font_med, INK, (cx, py + 140), center=True)
+        draw_text(surface, str(collect.json_out_path), font_small, (100, 140, 80), (cx, py + 172), center=True)
+        draw_text(surface, "The decoder is running on the SciFi device.", font_med, INK, (cx, py + 230), center=True)
+        draw_text(surface, "Press SPACE or click below to play.", font_med, (130, 108, 72), (cx, py + 268), center=True)
+        cont_r = pygame.Rect(cx - 120, py + 320, 240, 52)
+        draw_round_rect(surface, cont_r, BLUE, radius=12)
+        draw_text(surface, "PLAY GAME", font_big, WHITE, cont_r.center, center=True)
+        rects["continue"] = cont_r
 
     elif collect.phase == "processing":
         draw_text(surface, "PROCESSING...", font_title, INK, (cx, py + 50), center=True)
@@ -2424,17 +2314,8 @@ def main() -> None:
                                                "sync_release", "cueing"):
                             if event.key == pygame.K_ESCAPE:
                                 collect.phase = "setup"
-                        elif collect.phase in ("h5_select",):
-                            if event.key == pygame.K_UP:
-                                collect.selected_h5 = max(0, collect.selected_h5 - 1)
-                            elif event.key == pygame.K_DOWN and collect.h5_files:
-                                collect.selected_h5 = min(
-                                    len(collect.h5_files) - 1, collect.selected_h5 + 1)
-                            elif event.key == pygame.K_RETURN and collect.h5_files:
-                                collect.start_processing(
-                                    collect.json_out_path,
-                                    collect.h5_files[collect.selected_h5])
-                            elif event.key == pygame.K_ESCAPE:
+                        elif collect.phase == "collect_done":
+                            if event.key in (pygame.K_SPACE, pygame.K_RETURN):
                                 show_collect = False
                         elif collect.phase in ("calib_done", "calib_error"):
                             if event.key == pygame.K_SPACE:
@@ -2465,16 +2346,8 @@ def main() -> None:
                                     collect.isi_s = round(max(0.3, collect.isi_s - 0.1), 1)
                                 elif name == "isi_plus":
                                     collect.isi_s = round(min(3.0, collect.isi_s + 0.1), 1)
-                                elif name == "process":
-                                    collect.start_processing(
-                                        collect.json_out_path,
-                                        collect.h5_files[collect.selected_h5])
                                 elif name == "continue":
                                     show_collect = False
-                                elif name == "retry":
-                                    collect.phase = "h5_select"
-                                elif name.startswith("h5_") and name[3:].isdigit():
-                                    collect.selected_h5 = int(name[3:])
                                 break
                     elif reset_btn_rect is not None and reset_btn_rect.collidepoint(event.pos):
                         state.reset()
