@@ -11,7 +11,10 @@ Predictions are clipped to valid controller ranges ([-1,1] for sticks, [0,1] for
 ### Pipeline
 - 10 ms bins with 200 ms context (20 bins)  
 - Mean + RMS features → 2560-dimensional input  
-- Standardization → ridge regression → clipping → rescaling  
+- Standardization → ridge regression → clipping → rescaling
+- 
+### Calibration Note
+The calibration system (estimating optimal \( N \), threshold \( \theta \), and resulting bit rate \( B \)) is implemented. Although sweep results are collected and visualized, the selection criteria and downstream integration are not fully validated, so reported optimal values should be interpreted as approximate.
 
 ### What Didn’t Work
 - Classification on discretized targets performed at chance (balanced accuracy 0.33 for 4-class, 0.07 for \( N = 14 \))  
