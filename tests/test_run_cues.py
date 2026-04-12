@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from run_cues import (
-    SYMBOL_STRS, N_SYMBOLS, generate_cue_sequence, build_log, write_log, main
+    SYMBOL_STRS, N_SYMBOLS, ALPHABETS, generate_cue_sequence, build_log, write_log, main
 )
 
 def test_symbol_strs_exact_match():
@@ -119,3 +119,22 @@ def test_cue_color_unknown_raises():
     import pytest
     with pytest.raises(ValueError):
         cue_color("trigger", "LT")
+
+def test_alphabet_n10_coverage():
+    n10 = ALPHABETS["n10"]
+    cues = generate_cue_sequence(2000, seed=0, alphabet=n10)
+    assert cues.shape == (2000,)
+    unique = set(cues.tolist())
+    assert unique.issubset(set(n10)), f"unexpected symbols: {unique - set(n10)}"
+    assert set(n10).issubset(unique), f"missing symbols: {set(n10) - unique}"
+
+def test_alphabet_full_default():
+    cues = generate_cue_sequence(22000, seed=0)
+    assert cues.min() >= 0 and cues.max() < 22
+
+def test_build_log_includes_alphabet():
+    trials = [{"idx": 0, "symbol_idx": 2, "t_mono_ns": 42}]
+    log = build_log(0, 0, 0, trials, 0, 1, 0.8,
+                    alphabet_name="n10", alphabet_indices=ALPHABETS["n10"])
+    assert log["alphabet"] == "n10"
+    assert log["alphabet_symbols"] == [SYMBOL_STRS[i] for i in ALPHABETS["n10"]]

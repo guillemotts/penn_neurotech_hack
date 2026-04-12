@@ -10,6 +10,11 @@ SYMBOLS = (
 N_SYMBOLS = 22
 SYMBOL_STRS = [f"{t}_{v}" for t, v in SYMBOLS]
 
+ALPHABETS = {
+    "full": list(range(22)),  # all 22
+    "n10": [0, 2, 4, 6, 16, 17, 18, 19, 20, 21],  # 4 ljoy cardinals + 6 buttons
+}
+
 COLOR_LEFT = (80, 200, 255)
 COLOR_RIGHT = (255, 160, 60)
 COLOR_VERT = (255, 220, 80)
@@ -35,10 +40,13 @@ def cue_color(sym_type: str, sym_val) -> tuple:
 def symbol_str(idx: int) -> str:
     return SYMBOL_STRS[idx]
 
-def generate_cue_sequence(n_trials: int, seed: int) -> np.ndarray:
+def generate_cue_sequence(n_trials: int, seed: int, alphabet: list = None) -> np.ndarray:
     """iid uniform sampling over N_SYMBOLS. Returns int64 array (n_trials,)."""
     rng = np.random.default_rng(seed)
-    return rng.integers(0, N_SYMBOLS, size=n_trials, dtype=np.int64)
+    if alphabet is None:
+        return rng.integers(0, N_SYMBOLS, size=n_trials, dtype=np.int64)
+    pool = np.array(alphabet, dtype=np.int64)
+    return pool[rng.integers(0, len(pool), size=n_trials)]
 
 def build_log(
     session_start_ns: int,
@@ -48,11 +56,17 @@ def build_log(
     seed: int,
     n_trials: int,
     isi_s: float,
+    alphabet_name: str = "full",
+    alphabet_indices: list = None,
 ) -> dict:
+    if alphabet_indices is None:
+        alphabet_indices = ALPHABETS["full"]
     return {
         "schema_version": 1,
         "symbols": SYMBOL_STRS,
         "n_symbols": N_SYMBOLS,
+        "alphabet": alphabet_name,
+        "alphabet_symbols": [SYMBOL_STRS[i] for i in alphabet_indices],
         "seed": int(seed),
         "n_trials": int(n_trials),
         "isi_s": float(isi_s),
@@ -78,8 +92,9 @@ def write_log(out_path: Path, log: dict) -> None:
     with out_path.open("w") as f:
         json.dump(log, f, indent=2)
 
-def run_dry(n_trials: int, seed: int, isi_s: float, out_path: Path) -> int:
-    cues = generate_cue_sequence(n_trials, seed)
+def run_dry(n_trials: int, seed: int, isi_s: float, out_path: Path, alphabet_name: str = "full") -> int:
+    alphabet_indices = ALPHABETS[alphabet_name]
+    cues = generate_cue_sequence(n_trials, seed, alphabet_indices)
     t0 = time.monotonic_ns()
     sync_prompt = t0 + 1_000_000_000
     sync_release = sync_prompt + 2_000_000_000
@@ -88,14 +103,16 @@ def run_dry(n_trials: int, seed: int, isi_s: float, out_path: Path) -> int:
         {"idx": i, "symbol_idx": int(s), "t_mono_ns": sync_release + 1_000_000_000 + i * isi_ns}
         for i, s in enumerate(cues)
     ]
-    log = build_log(t0, sync_prompt, sync_release, trials, seed, n_trials, isi_s)
+    log = build_log(t0, sync_prompt, sync_release, trials, seed, n_trials, isi_s,
+                    alphabet_name=alphabet_name, alphabet_indices=alphabet_indices)
     write_log(out_path, log)
     print(f"DRY n_trials={n_trials} out={out_path}")
     return 0
 
-def run_live(n_trials: int, seed: int, isi_s: float, out_path: Path) -> int:
+def run_live(n_trials: int, seed: int, isi_s: float, out_path: Path, alphabet_name: str = "full") -> int:
     import pygame
-    cues = generate_cue_sequence(n_trials, seed)
+    alphabet_indices = ALPHABETS[alphabet_name]
+    cues = generate_cue_sequence(n_trials, seed, alphabet_indices)
     pygame.init()
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     W, H = screen.get_size()
@@ -183,7 +200,8 @@ def run_live(n_trials: int, seed: int, isi_s: float, out_path: Path) -> int:
         pygame.quit()
 
     log = build_log(session_start_ns, sync_prompt_ns, sync_release_ns,
-                    trial_records, seed, n_trials, isi_s)
+                    trial_records, seed, n_trials, isi_s,
+                    alphabet_name=alphabet_name, alphabet_indices=alphabet_indices)
     write_log(out_path, log)
     print(f"SAVED trials_written={len(trial_records)} out={out_path}")
     return 0
@@ -195,14 +213,15 @@ def main(argv=None) -> int:
     p.add_argument("--isi", type=float, default=0.8)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--alphabet", choices=list(ALPHABETS.keys()), default="full")
     args = p.parse_args(argv)
     if args.n_trials < 1:
         p.error("--n-trials must be >= 1")
     if args.isi <= 0:
         p.error("--isi must be > 0")
     if args.dry_run:
-        return run_dry(args.n_trials, args.seed, args.isi, args.out)
-    return run_live(args.n_trials, args.seed, args.isi, args.out)
+        return run_dry(args.n_trials, args.seed, args.isi, args.out, alphabet_name=args.alphabet)
+    return run_live(args.n_trials, args.seed, args.isi, args.out, alphabet_name=args.alphabet)
 
 if __name__ == "__main__":
     sys.exit(main())
