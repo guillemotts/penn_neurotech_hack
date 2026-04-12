@@ -42,14 +42,38 @@ import pygame
 # ------------------------------------------------------------
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
 WIDTH, HEIGHT = screen.get_size()
-LEFT_PANEL_W = int(WIDTH * 0.58)
+
+# ------------------------------------------------------------
+# Layout tuning
+# ------------------------------------------------------------
+LEFT_PANEL_RATIO = 0.56
+LEFT_PANEL_W = int(WIDTH * LEFT_PANEL_RATIO)
 RIGHT_PANEL_X = LEFT_PANEL_W
 RIGHT_PANEL_W = WIDTH - LEFT_PANEL_W
+
 FPS = 60
 VISIBLE_PROMPTS = 3
 UDP_PORT = 5005
 CONTROLLER_IMAGE_PATH = "Controller.jpg"
 JUDGE_FACE_PATH = "judge_face.png"  # Optional future stretch asset.
+
+# Top-left white status box
+STATUS_BOX_X = 48
+STATUS_BOX_Y = 28
+STATUS_BOX_W = LEFT_PANEL_W - 116
+STATUS_BOX_H = 110
+
+# Right-side queue panel (outer container)
+QUEUE_PANEL_X = RIGHT_PANEL_X + 16
+QUEUE_PANEL_Y = 18
+QUEUE_PANEL_W = RIGHT_PANEL_W - 32
+QUEUE_PANEL_H = HEIGHT - 36
+
+# Inner spacing for the 3 controller cards
+QUEUE_CARD_SIDE_PAD = 16
+QUEUE_CARD_TOP_PAD = 16
+QUEUE_CARD_BOTTOM_PAD = 16
+QUEUE_CARD_GAP = 14
 
 BG = (243, 236, 218)
 INK = (34, 34, 34)
@@ -172,11 +196,11 @@ class GameState:
             return self.elapsed_before_pause + (time.time() - self.run_start_time)
         return self.elapsed_before_pause
 
-    def bitrate(self) -> float:
+    def bitrate(self, N: int) -> float:
         elapsed = self.elapsed()
         if elapsed <= 0:
             return 0.0
-        return math.log2(22) * (self.total_inputs - self.incorrect_inputs) / elapsed
+        return math.log2(N) * (self.total_inputs - self.incorrect_inputs) / elapsed
 
     def process_input(self, action: str) -> None:
         if not self.running or not self.prompt_queue:
@@ -366,69 +390,230 @@ def draw_dancer(surface: pygame.Surface, t: float, judge_face: pygame.Surface | 
         clip.blit(face, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
         surface.blit(clip, face_rect)
 
-
-def draw_status_panel(surface: pygame.Surface, state: GameState, font_big: pygame.font.Font, font_med: pygame.font.Font, font_small: pygame.font.Font) -> None:
-    box = pygame.Rect(60, 36, LEFT_PANEL_W - 120, 112)
+def draw_status_panel(
+    surface: pygame.Surface,
+    state: GameState,
+    font_big: pygame.font.Font,
+    font_med: pygame.font.Font,
+    font_small: pygame.font.Font,
+) -> None:
+    box = pygame.Rect(STATUS_BOX_X, STATUS_BOX_Y, STATUS_BOX_W, STATUS_BOX_H)
     draw_round_rect(surface, box, WHITE, radius=22)
     pygame.draw.rect(surface, (224, 212, 185), box, width=2, border_radius=22)
 
-    bitrate = state.bitrate()
-    draw_text(surface, f"Bit rate: {bitrate:.2f} bits/sec", font_big, INK, (box.x + 22, box.y + 16))
+    bitrate = state.bitrate(22)
+    draw_text(surface, f"Bit rate: {bitrate:.2f} bits/sec", font_big, INK, (box.x + 22, box.y + 14))
     run_state = "RUNNING" if state.running else "STOPPED"
-    draw_text(surface, f"Judge: {run_state}", font_small, BLUE if state.running else RED, (box.x + 22, box.y + 82))
+    draw_text(surface, f"Judge: {run_state}", font_small, BLUE if state.running else RED, (box.x + 22, box.y + 84))
+    draw_text(surface, f"Seen: {state.total_inputs}", font_small, INK, (box.x + 170, box.y + 84))
+    draw_text(surface, f"Wrong: {state.incorrect_inputs}", font_small, INK, (box.x + 260, box.y + 84))
 
 
-def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> None:
-    pygame.draw.rect(surface, (248, 242, 228), rect, border_radius=26)
-    body = rect.inflate(-rect.w * 0.12, -rect.h * 0.18)
-    pygame.draw.rect(surface, (230, 220, 198), body, border_radius=50)
-    pygame.draw.circle(surface, (211, 200, 178), (body.x + body.w // 4, body.y + body.h // 2), max(12, body.w // 10))
-    for offset in [(-16, -16), (16, -16), (-16, 16), (16, 16)]:
-        pygame.draw.circle(surface, (211, 200, 178), (body.x + int(body.w * 0.73) + offset[0], body.y + int(body.h * 0.38) + offset[1]), 10)
+def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> tuple[dict[str, tuple[int, int]], dict[str, pygame.Rect], dict[str, tuple[tuple[int, int], int]]]:
+    body = rect.inflate(-int(rect.w * 0.08), -int(rect.h * 0.16))
+
+    base_color = (232, 223, 203)
+    edge_color = (198, 186, 162)
+    detail_color = (176, 164, 142)
+    stick_ring_color = (145, 134, 116)
+    stick_inner_color = (120, 110, 96)
+    button_color = (200, 188, 164)
+
+    # Main rectangular controller body
+    main_body = pygame.Rect(
+        body.x + int(body.w * 0.05),
+        body.y + int(body.h * 0.16),
+        int(body.w * 0.90),
+        int(body.h * 0.62),
+    )
+    pygame.draw.rect(surface, base_color, main_body, border_radius=34)
+    pygame.draw.rect(surface, edge_color, main_body, width=3, border_radius=34)
+
+    # LB / RB shoulder buttons
+    shoulder_w = int(main_body.w * 0.24)
+    shoulder_h = int(main_body.h * 0.12)
+    shoulder_y = main_body.y - int(shoulder_h * 0.65)
+
+    lb_rect = pygame.Rect(
+        main_body.x + int(main_body.w * 0.03),
+        shoulder_y,
+        shoulder_w,
+        shoulder_h,
+    )
+    rb_rect = pygame.Rect(
+        main_body.right - shoulder_w - int(main_body.w * 0.03),
+        shoulder_y,
+        shoulder_w,
+        shoulder_h,
+    )
+
+    pygame.draw.rect(surface, detail_color, lb_rect, border_radius=10)
+    pygame.draw.rect(surface, detail_color, rb_rect, border_radius=10)
+    pygame.draw.rect(surface, edge_color, lb_rect, width=2, border_radius=10)
+    pygame.draw.rect(surface, edge_color, rb_rect, width=2, border_radius=10)
+
+    # Left joystick
+    stick_r = max(14, int(main_body.w * 0.055))
+    left_stick_center = (
+        main_body.x + int(main_body.w * 0.28),
+        main_body.y + int(main_body.h * 0.48),
+    )
+    pygame.draw.circle(surface, detail_color, left_stick_center, stick_r + 7)
+    pygame.draw.circle(surface, stick_ring_color, left_stick_center, stick_r)
+    pygame.draw.circle(surface, stick_inner_color, left_stick_center, max(6, stick_r - 6))
+
+    # Right joystick (same size/style as left)
+    right_stick_center = (
+        main_body.x + int(main_body.w * 0.58),
+        main_body.y + int(main_body.h * 0.58),
+    )
+    pygame.draw.circle(surface, detail_color, right_stick_center, stick_r + 7)
+    pygame.draw.circle(surface, stick_ring_color, right_stick_center, stick_r)
+    pygame.draw.circle(surface, stick_inner_color, right_stick_center, max(6, stick_r - 6))
+
+    # XYAB diamond layout
+    face_cx = main_body.x + int(main_body.w * 0.79)
+    face_cy = main_body.y + int(main_body.h * 0.40)
+    face_gap = max(18, int(main_body.w * 0.055))
+    face_r = max(9, int(main_body.w * 0.026))
+
+    diamond_positions = {
+        "Y": (face_cx, face_cy - face_gap),
+        "A": (face_cx, face_cy + face_gap),
+        "X": (face_cx - face_gap, face_cy),
+        "B": (face_cx + face_gap, face_cy),
+    }
+
+    for pos in diamond_positions.values():
+        pygame.draw.circle(surface, button_color, pos, face_r)
+        pygame.draw.circle(surface, edge_color, pos, face_r, 2)
+
+    # Build exact positions dict for overlay alignment
+    positions: dict[str, tuple[int, int]] = {}
+    positions["LB"] = lb_rect.center
+    positions["RB"] = rb_rect.center
+    positions.update(diamond_positions)
+
+    d = stick_r + 6
+    diag = int(d * 0.707)
+    lx, ly = left_stick_center
+    positions["L_UP"]        = (lx,        ly - d)
+    positions["L_DOWN"]      = (lx,        ly + d)
+    positions["L_LEFT"]      = (lx - d,    ly)
+    positions["L_RIGHT"]     = (lx + d,    ly)
+    positions["L_UPLEFT"]    = (lx - diag, ly - diag)
+    positions["L_UPRIGHT"]   = (lx + diag, ly - diag)
+    positions["L_DOWNLEFT"]  = (lx - diag, ly + diag)
+    positions["L_DOWNRIGHT"] = (lx + diag, ly + diag)
+
+    rx, ry = right_stick_center
+    positions["R_UP"]        = (rx,        ry - d)
+    positions["R_DOWN"]      = (rx,        ry + d)
+    positions["R_LEFT"]      = (rx - d,    ry)
+    positions["R_RIGHT"]     = (rx + d,    ry)
+    positions["R_UPLEFT"]    = (rx - diag, ry - diag)
+    positions["R_UPRIGHT"]   = (rx + diag, ry - diag)
+    positions["R_DOWNLEFT"]  = (rx - diag, ry + diag)
+    positions["R_DOWNRIGHT"] = (rx + diag, ry + diag)
+
+    shoulder_rects = {"LB": lb_rect, "RB": rb_rect}
+    stick_info = {
+        "L": (left_stick_center, stick_r + 7),
+        "R": (right_stick_center, stick_r + 7),
+    }
+    return positions, shoulder_rects, stick_info
+
+STICK_DIRECTION_ANGLES = {
+    "L_RIGHT": 0, "L_DOWNRIGHT": 45, "L_DOWN": 90, "L_DOWNLEFT": 135,
+    "L_LEFT": 180, "L_UPLEFT": 225, "L_UP": 270, "L_UPRIGHT": 315,
+    "R_RIGHT": 0, "R_DOWNRIGHT": 45, "R_DOWN": 90, "R_DOWNLEFT": 135,
+    "R_LEFT": 180, "R_UPLEFT": 225, "R_UP": 270, "R_UPRIGHT": 315,
+}
 
 
-def draw_action_overlay(surface: pygame.Surface, img_rect: pygame.Rect, action: str) -> None:
+def _pie_polygon(cx: int, cy: int, r: int, center_deg: float, n: int = 20) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = [(cx, cy)]
+    start = math.radians(center_deg - 22.5)
+    end = math.radians(center_deg + 22.5)
+    for i in range(n + 1):
+        a = start + (end - start) * i / n
+        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+def draw_action_overlay(
+    surface: pygame.Surface,
+    img_rect: pygame.Rect,
+    action: str,
+    positions: dict[str, tuple[int, int]] | None = None,
+    shoulder_rects: dict[str, pygame.Rect] | None = None,
+    stick_info: dict[str, tuple[tuple[int, int], int]] | None = None,
+) -> None:
     overlay = pygame.Surface((img_rect.w, img_rect.h), pygame.SRCALPHA)
 
-    button_positions = {
-        "LB": (0.20, 0.12),
-        "RB": (0.80, 0.12),
-        "X": (0.63, 0.35),
-        "Y": (0.73, 0.28),
-        "A": (0.73, 0.48),
-        "B": (0.84, 0.39),
-    }
-    left_stick_center = (0.26, 0.43)
-    right_stick_center = (0.50, 0.65)
+    # Full-bar highlight for LB / RB
+    if shoulder_rects is not None and action in shoulder_rects:
+        r = shoulder_rects[action]
+        local = pygame.Rect(r.x - img_rect.x, r.y - img_rect.y, r.w, r.h)
+        pygame.draw.rect(overlay, (*ACCENT, 200), local, border_radius=10)
+        surface.blit(overlay, img_rect.topleft)
+        return
 
-    def to_px(nx: float, ny: float) -> tuple[int, int]:
-        return int(nx * img_rect.w), int(ny * img_rect.h)
+    # Pie-slice highlight for joystick directions
+    if stick_info is not None and action in STICK_DIRECTION_ANGLES:
+        side = action[0]  # "L" or "R"
+        (abs_cx, abs_cy), r = stick_info[side]
+        cx = abs_cx - img_rect.x
+        cy = abs_cy - img_rect.y
+        pts = _pie_polygon(cx, cy, r, STICK_DIRECTION_ANGLES[action])
+        pygame.draw.polygon(overlay, (*ACCENT, 200), pts)
+        surface.blit(overlay, img_rect.topleft)
+        return
 
-    if action in button_positions:
-        x, y = to_px(*button_positions[action])
-        pygame.draw.circle(overlay, (*ACCENT, 190), (x, y), max(14, img_rect.w // 20))
+    if positions is not None:
+        # Exact pixel positions returned by draw_placeholder_controller
+        if action not in positions:
+            surface.blit(overlay, img_rect.topleft)
+            return
+        abs_x, abs_y = positions[action]
+        x = abs_x - img_rect.x
+        y = abs_y - img_rect.y
     else:
-        is_left = action.startswith("L_")
-        center = left_stick_center if is_left else right_stick_center
-        cx, cy = to_px(*center)
-        pygame.draw.circle(overlay, (255, 255, 255, 90), (cx, cy), max(10, img_rect.w // 24), 2)
+        # Normalized fallback for a real controller image
+        highlight_positions = {
+            "LB": (0.20, 0.12),
+            "RB": (0.80, 0.12),
+            "X":  (0.63, 0.35),
+            "Y":  (0.73, 0.28),
+            "A":  (0.73, 0.48),
+            "B":  (0.84, 0.39),
 
-        direction = action.split("_", 1)[1]
-        dx = 0.0
-        dy = 0.0
-        if "LEFT" in direction:
-            dx -= 0.12
-        if "RIGHT" in direction:
-            dx += 0.12
-        if "UP" in direction:
-            dy -= 0.12
-        if "DOWN" in direction:
-            dy += 0.12
+            "L_UPLEFT":    (0.18, 0.35),
+            "L_UP":        (0.26, 0.31),
+            "L_UPRIGHT":   (0.34, 0.35),
+            "L_LEFT":      (0.18, 0.43),
+            "L_RIGHT":     (0.34, 0.43),
+            "L_DOWNLEFT":  (0.18, 0.51),
+            "L_DOWN":      (0.26, 0.55),
+            "L_DOWNRIGHT": (0.34, 0.51),
 
-        tx, ty = to_px(center[0] + dx, center[1] + dy)
-        pygame.draw.line(overlay, (*ACCENT, 180), (cx, cy), (tx, ty), 5)
-        pygame.draw.circle(overlay, (*ACCENT, 220), (tx, ty), max(12, img_rect.w // 24))
+            "R_UPLEFT":    (0.62, 0.47),
+            "R_UP":        (0.65, 0.45),
+            "R_UPRIGHT":   (0.68, 0.47),
+            "R_LEFT":      (0.60, 0.55),
+            "R_RIGHT":     (0.70, 0.55),
+            "R_DOWNLEFT":  (0.62, 0.63),
+            "R_DOWN":      (0.65, 0.66),
+            "R_DOWNRIGHT": (0.68, 0.63),
+        }
+        if action not in highlight_positions:
+            surface.blit(overlay, img_rect.topleft)
+            return
+        nx, ny = highlight_positions[action]
+        x = int(nx * img_rect.w)
+        y = int(ny * img_rect.h)
 
+    pygame.draw.circle(overlay, (*ACCENT, 255), (x, y), 4)
     surface.blit(overlay, img_rect.topleft)
 
 
@@ -460,30 +645,40 @@ def draw_prompt_card(
 
     image_area = pygame.Rect(rect.x + 12, rect.y + 48, rect.w - 24, rect.h - 60)
     if controller_image is None:
-        draw_placeholder_controller(surface, image_area)
+        positions, shoulder_rects, stick_info = draw_placeholder_controller(surface, image_area)
         img_rect = image_area
+        draw_action_overlay(surface, img_rect, action, positions, shoulder_rects, stick_info)
     else:
         img_rect = fit_rect(controller_image.get_width(), controller_image.get_height(), image_area, padding=4)
         scaled = pygame.transform.smoothscale(controller_image, (img_rect.w, img_rect.h))
         surface.blit(scaled, img_rect)
+        draw_action_overlay(surface, img_rect, action)
 
-    draw_action_overlay(surface, img_rect, action)
 
-
-def draw_queue_panel(surface: pygame.Surface, state: GameState, controller_image: pygame.Surface | None, font_big: pygame.font.Font, font_med: pygame.font.Font, font_small: pygame.font.Font) -> None:
-    panel_rect = pygame.Rect(RIGHT_PANEL_X + 18, 22, RIGHT_PANEL_W - 36, HEIGHT - 44)
+def draw_queue_panel(
+    surface: pygame.Surface,
+    state: GameState,
+    controller_image: pygame.Surface | None,
+    font_big: pygame.font.Font,
+    font_med: pygame.font.Font,
+    font_small: pygame.font.Font,
+) -> None:
+    panel_rect = pygame.Rect(QUEUE_PANEL_X, QUEUE_PANEL_Y, QUEUE_PANEL_W, QUEUE_PANEL_H)
     draw_round_rect(surface, panel_rect, PANEL_ALT, radius=24)
     pygame.draw.rect(surface, (220, 206, 183), panel_rect, width=2, border_radius=24)
 
-    card_area_top = panel_rect.y + 84
-    card_gap = 10
-    available_h = panel_rect.h - 110
-    card_h = int((available_h - card_gap * (VISIBLE_PROMPTS - 1)) / VISIBLE_PROMPTS)
+    available_h = panel_rect.h - QUEUE_CARD_TOP_PAD - QUEUE_CARD_BOTTOM_PAD
+    card_h = int((available_h - QUEUE_CARD_GAP * (VISIBLE_PROMPTS - 1)) / VISIBLE_PROMPTS)
 
     flash_color = state.last_result_color if time.time() < state.last_result_until else None
 
     for idx, action in enumerate(state.prompt_queue[:VISIBLE_PROMPTS]):
-        rect = pygame.Rect(panel_rect.x + 16, card_area_top + idx * (card_h + card_gap), panel_rect.w - 32, card_h)
+        rect = pygame.Rect(
+            panel_rect.x + QUEUE_CARD_SIDE_PAD,
+            panel_rect.y + QUEUE_CARD_TOP_PAD + idx * (card_h + QUEUE_CARD_GAP),
+            panel_rect.w - QUEUE_CARD_SIDE_PAD * 2,
+            card_h,
+        )
         draw_prompt_card(
             surface,
             rect,
@@ -501,7 +696,6 @@ def draw_queue_panel(surface: pygame.Surface, state: GameState, controller_image
 def main() -> None:
     pygame.init()
     pygame.display.set_caption("Dance Simulation Prototype")
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
     font_big = pygame.font.SysFont("arial", 34, bold=True)
