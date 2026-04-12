@@ -1,21 +1,24 @@
 {
-  "sample_rate_hz": 30000,
-  "bin_size_raw_frames": 300,
+  "sample_rate_hz": 32000,
+  "bin_size_raw_frames": 320,
   "context_bins": 20,
-  "feature_mode": "mean_logrms",
-  "best_alpha": 100,
-  "n_train_samples": 89650,
-  "n_seeds": 9,
-  "seeds_used": [
-    7,
-    8,
-    9,
-    10,
-    11,
-    12,
-    13,
-    14,
-    15
+  "feature_mode": "mean_rms",
+  "best_alpha": 100.0,
+  "n_train_samples": 120363,
+  "n_files": 12,
+  "files_used": [
+    "hard-ksenija-smoke-1.h5",
+    "hard-ksenija-smoke-2.h5",
+    "hard-ksenija-smoke-3.h5",
+    "smoke_Ani_seed10.h5",
+    "smoke_Ani_seed11.h5",
+    "smoke_Ani_seed12.h5",
+    "smoke_Ani_seed13.h5",
+    "smoke_Ani_seed14.h5",
+    "smoke_Ani_seed15.h5",
+    "smoke_Ani_seed7.h5",
+    "smoke_Ani_seed8.h5",
+    "smoke_Ani_seed9.h5"
   ],
   "onnx_input_shape": [
     1,
@@ -27,9 +30,9 @@
   ],
   "synapse_app_parameters": {
     "input_channels": 64,
-    "frames_per_step": 300,
+    "frames_per_step": 320,
     "feature_window": 20,
-    "feature_mode": "mean_logrms",
+    "feature_mode": "mean_rms",
     "model_name": "model"
   }
 }
