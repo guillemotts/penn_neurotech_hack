@@ -40,13 +40,13 @@ import pygame
 #   Send UTF-8 strings like "A", "RB", "L_UP", "R_DOWNLEFT"
 #   to UDP port 5005 on this machine.
 # ------------------------------------------------------------
-
-WIDTH, HEIGHT = 1440, 860
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+WIDTH, HEIGHT = screen.get_size()
 LEFT_PANEL_W = int(WIDTH * 0.58)
 RIGHT_PANEL_X = LEFT_PANEL_W
 RIGHT_PANEL_W = WIDTH - LEFT_PANEL_W
 FPS = 60
-VISIBLE_PROMPTS = 5
+VISIBLE_PROMPTS = 3
 UDP_PORT = 5005
 CONTROLLER_IMAGE_PATH = "Controller.jpg"
 JUDGE_FACE_PATH = "judge_face.png"  # Optional future stretch asset.
@@ -374,17 +374,8 @@ def draw_status_panel(surface: pygame.Surface, state: GameState, font_big: pygam
 
     bitrate = state.bitrate()
     draw_text(surface, f"Bit rate: {bitrate:.2f} bits/sec", font_big, INK, (box.x + 22, box.y + 16))
-    draw_text(
-        surface,
-        f"Total: {state.total_inputs}   Correct: {state.total_inputs - state.incorrect_inputs}   Incorrect: {state.incorrect_inputs}",
-        font_med,
-        INK,
-        (box.x + 22, box.y + 54),
-    )
     run_state = "RUNNING" if state.running else "STOPPED"
     draw_text(surface, f"Judge: {run_state}", font_small, BLUE if state.running else RED, (box.x + 22, box.y + 82))
-    draw_text(surface, f"Last input: {state.last_input_text}", font_small, INK, (box.x + 170, box.y + 82))
-    draw_text(surface, f"UDP port: {UDP_PORT}", font_small, INK, (box.right - 160, box.y + 82))
 
 
 def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> None:
@@ -477,16 +468,12 @@ def draw_prompt_card(
         surface.blit(scaled, img_rect)
 
     draw_action_overlay(surface, img_rect, action)
-    draw_text(surface, "top prompt" if active else "incoming", font_small, INK, (rect.x + 16, rect.bottom - 24))
 
 
 def draw_queue_panel(surface: pygame.Surface, state: GameState, controller_image: pygame.Surface | None, font_big: pygame.font.Font, font_med: pygame.font.Font, font_small: pygame.font.Font) -> None:
     panel_rect = pygame.Rect(RIGHT_PANEL_X + 18, 22, RIGHT_PANEL_W - 36, HEIGHT - 44)
     draw_round_rect(surface, panel_rect, PANEL_ALT, radius=24)
     pygame.draw.rect(surface, (220, 206, 183), panel_rect, width=2, border_radius=24)
-
-    draw_text(surface, "Prompt Queue", font_big, INK, (panel_rect.x + 18, panel_rect.y + 14))
-    draw_text(surface, "Green = correct  •  Red = wrong  •  queue always advances", font_small, INK, (panel_rect.x + 18, panel_rect.y + 52))
 
     card_area_top = panel_rect.y + 84
     card_gap = 10
@@ -509,9 +496,6 @@ def draw_queue_panel(surface: pygame.Surface, state: GameState, controller_image
         )
 
 
-def draw_footer_help(surface: pygame.Surface, font_small: pygame.font.Font) -> None:
-    footer_text = "SPACE start/stop • R reset • keyboard test inputs enabled • UDP strings like A, RB, L_UP, R_DOWNLEFT"
-    draw_text(surface, footer_text, font_small, INK, (28, HEIGHT - 28))
 
 
 def main() -> None:
@@ -572,8 +556,6 @@ def main() -> None:
             for note in notes:
                 draw_note(screen, note.x, note.y, note.size)
             draw_queue_panel(screen, state, controller_image, font_big, font_med, font_small)
-            draw_footer_help(screen, font_small)
-
             pygame.display.flip()
     finally:
         udp_receiver.stop()
