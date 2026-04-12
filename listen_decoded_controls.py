@@ -35,8 +35,8 @@ def build_symbol_names(N):
     else:
         stick = {i: f"S{i}" for i in range(N)}
     buttons = {
-        N: "Y", N + 1: "A", N + 2: "X",
-        N + 3: "B", N + 4: "LB", N + 5: "RB",
+        N: "A", N + 1: "B", N + 2: "X",
+        N + 3: "Y", N + 4: "LB", N + 5: "RB",
     }
     return {**stick, **buttons}
 
