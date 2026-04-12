@@ -1,4 +1,5 @@
 Penn Neurotech Hack — Science Track
+
 We chose N = 14, as we thought it would be too difficult to learn an alphabet any bigger than that. 
 We use a windowed ridge regression decoder: neural data from the past N bins is flattened, standardized, and mapped linearly to controller outputs. Ridge is robust to noise and multicollinearity, which is critical for high-dimensional neural inputs.
 Sample weighting emphasizes behaviorally relevant periods so the model does not get dominated by idle data. This improves performance where it matters.
