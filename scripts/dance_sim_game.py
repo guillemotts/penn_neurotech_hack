@@ -41,6 +41,8 @@ import pygame
 #   Send UTF-8 strings like "A", "RB", "L_UP", "R_DOWN"
 #   to UDP port 5005 on this machine.
 # ------------------------------------------------------------
+pygame.mixer.pre_init(44100, -16, 2, 512)  # must run before display init
+pygame.init()
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
 WIDTH, HEIGHT = screen.get_size()
 
@@ -57,6 +59,8 @@ TRIAL_DURATION = 60
 VISIBLE_PROMPTS = 3
 UDP_PORT = 5005
 CONTROLLER_IMAGE_PATH = "Controller.jpg"
+MUSIC_PATH = "hotline_bling.mp3"   # place file next to this script
+MUSIC_CLIP_S = 60.0                # seconds of the clip to play
 JUDGE_FACE_PATH = "judge_face.png"  # Optional future stretch asset.
 
 # Top-left white status box
@@ -219,6 +223,7 @@ class GameState:
     run_start_time: float | None = None
     dancer_scale: float = 0.60
     dancer_scale_target: float = 0.60
+    _music_started: float = 0.0   # time.time() when music was started
 
     def reset(self) -> None:
         self.running = False
@@ -235,12 +240,19 @@ class GameState:
         self.run_start_time = None
         self.dancer_scale = 0.60
         self.dancer_scale_target = 0.60
+        self._music_started = 0.0
+        try:
+            pygame.mixer.music.stop()
+        except pygame.error:
+            pass
 
     def start(self) -> None:
         if self.running or self.trial_ended:
             return
         self.running = True
         self.run_start_time = time.time()
+        self._music_started = self.run_start_time
+        _play_music_clip()
 
     def end_trial(self) -> None:
         if self.run_start_time is not None:
@@ -2331,8 +2343,21 @@ def draw_intro_screen(
     draw_text(surface, "PRESS SPACE TO BEGIN", font_big, WHITE, space_box.center, center=True)
 
 
+def _play_music_clip() -> None:
+    """Play from the beginning of MUSIC_PATH (if the file exists)."""
+    mp = Path(__file__).parent / MUSIC_PATH
+    if not mp.exists():
+        return
+    try:
+        pygame.mixer.music.stop()
+        pygame.mixer.music.load(str(mp))
+        pygame.mixer.music.set_volume(0.75)
+        pygame.mixer.music.play()
+    except pygame.error as exc:
+        print(f"[music] pygame.error: {exc}")
+
+
 def main() -> None:
-    pygame.init()
     pygame.display.set_caption("Dance Simulation Prototype")
     clock = pygame.time.Clock()
 
@@ -2484,6 +2509,11 @@ def main() -> None:
             update_notes(notes, dt)
             update_sardines(sardines, dt)
             state.dancer_scale += (state.dancer_scale_target - state.dancer_scale) * min(1.0, dt * 8)
+            if (state.running
+                    and state._music_started > 0
+                    and pygame.mixer.music.get_busy()
+                    and (time.time() - state._music_started) >= MUSIC_CLIP_S):
+                pygame.mixer.music.fadeout(500)
 
             screen.fill(BG)
             pygame.draw.line(screen, (220, 210, 188), (LEFT_PANEL_W, 20), (LEFT_PANEL_W, HEIGHT - 20), 3)
