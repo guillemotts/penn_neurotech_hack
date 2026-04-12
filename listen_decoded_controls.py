@@ -63,6 +63,14 @@ def tensor_to_numpy(tensor) -> np.ndarray:
     return np.asarray(arr).reshape(-1)
 
 
+# ── Format Stick ──────────────────────────────────────────────────────
+
+def format_stick(sym, names, prefix):
+    if sym < 0:
+        return f"{prefix}-0"
+    return f"{prefix}-{names.get(sym, '?')}"
+
+
 # ── Main ────────────────────────────────��────────────────────────────
 
 def run_live(args, cfg):
@@ -125,21 +133,36 @@ def run_live(args, cfg):
             y_smooth = np.mean(buf, axis=0)
             row = y_smooth[None, :]
 
-            stick_sym = discretize_stick(row, N, stick_thresh)[0]
+            left_sym = discretize_stick(row, N, stick_thresh, x_ch=0, y_ch=1)[0]
+            right_sym = discretize_stick(row, N, stick_thresh, x_ch=2, y_ch=3)[0]
             button_sym = discretize_button(row, button_thresh, stick_offset=N)[0]
             sym = int(combine(
-                np.array([stick_sym]), np.array([button_sym]))[0])
+                np.array([left_sym]), np.array([right_sym]), np.array([button_sym]))[0])
 
             if PRINT_ONLY_ON_CHANGE and sym == last_sym:
                 continue
 
-            name = names.get(sym, "NO_OP") if sym >= 0 else "NO_OP"
-            if PRINT_RAW:
-                print(f"[{ts_ns}] symbol={sym:3d} ({name:4s})  "
-                      f"smooth=[{y_smooth[0]:+.3f},{y_smooth[1]:+.3f}] "
-                      f"btn_max={y_smooth[4:10].max():.3f}")
-            else:
-                print(f"[{ts_ns}] symbol={sym:3d} ({name})")
+            left_name = format_stick(left_sym, names, "L")
+            right_name = format_stick(right_sym, names, "R")
+
+            button_name = names.get(button_sym, "NO_OP") if button_sym >= 0 else "NO_OP"
+
+            print(
+                f"[{ts_ns}] "
+                f"L={left_name:6s} "
+                f"R={right_name:6s} "
+                f"B={button_name:4s}  "
+                f"smooth=[{y_smooth[0]:+.3f},{y_smooth[1]:+.3f}] "
+                f"btn_max={y_smooth[4:10].max():.3f}"
+            )
+
+            # name = names.get(sym, "NO_OP") if sym >= 0 else "NO_OP"
+            # if PRINT_RAW:
+            #     print(f"[{ts_ns}] symbol={sym:3d} ({name:4s})  "
+            #           f"smooth=[{y_smooth[0]:+.3f},{y_smooth[1]:+.3f}] "
+            #           f"btn_max={y_smooth[4:10].max():.3f}")
+            # else:
+            #     print(f"[{ts_ns}] symbol={sym:3d} ({name})")
 
             last_sym = sym
 
@@ -189,10 +212,11 @@ def run_dry(cfg, debug_scale=False):
         y_smooth = np.mean(buf, axis=0)
         row = y_smooth[None, :]
 
-        stick_sym = discretize_stick(row, N, stick_thresh)[0]
+        left_sym = discretize_stick(row, N, stick_thresh, x_ch=0, y_ch=1)[0]
+        right_sym = discretize_stick(row, N, stick_thresh, x_ch=2, y_ch=3)[0]
         button_sym = discretize_button(row, button_thresh, stick_offset=N)[0]
         sym = int(combine(
-            np.array([stick_sym]), np.array([button_sym]))[0])
+            np.array([left_sym]), np.array([right_sym]), np.array([button_sym]))[0])
 
         name = names.get(sym, "NO_OP") if sym >= 0 else "NO_OP"
         print(f"[t={i:3d}] symbol={sym:3d} ({name:4s})  "

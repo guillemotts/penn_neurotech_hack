@@ -11,7 +11,7 @@
   "hard": {
     "K": 20,
     "stick_thresh": 0.15,
-    "button_thresh": 0.35,
+    "button_thresh": 0.15,
     "N": 4,
     "scoring": "stick+button",
     "silence_mode": "neutral",

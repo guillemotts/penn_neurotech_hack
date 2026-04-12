@@ -27,14 +27,14 @@ def causal_moving_average(Y: np.ndarray, K: int) -> np.ndarray:
 
 
 def discretize_stick(Y_smooth: np.ndarray, N: int,
-                     stick_thresh: float) -> np.ndarray:
+                     stick_thresh: float, x_ch=0, y_ch=1) -> np.ndarray:
     """
     Map (x, y) = Y_smooth[:, 0:2] to one of N equal angular sectors.
     Sector 0 centered on +x.  Returns int array {-1, 0, ..., N-1}.
     -1 = below threshold (no-op).
     """
-    x = Y_smooth[:, 0]
-    y = Y_smooth[:, 1]
+    x = Y_smooth[:, x_ch]
+    y = Y_smooth[:, y_ch]
     mag = np.sqrt(x ** 2 + y ** 2)
     angle = np.arctan2(y, x)  # atan2(y, x) — correct convention
 
@@ -61,12 +61,20 @@ def discretize_button(Y_smooth: np.ndarray, button_thresh: float,
     return sym
 
 
-def combine(stick_sym: np.ndarray, button_sym: np.ndarray) -> np.ndarray:
+def combine(left_stick_sym: np.ndarray, right_stick_sym: np.ndarray, button_sym: np.ndarray) -> np.ndarray:
     """
     Combine stick and button symbols.
     Precedence: button wins if != -1 (discrete events); else stick (may be -1).
     """
-    return np.where(button_sym != -1, button_sym, stick_sym)
+    return np.where(
+        button_sym != -1,
+        button_sym,
+        np.where(
+            left_stick_sym != -1,
+            left_stick_sym,
+            right_stick_sym
+        )
+    )
 
 
 def proxy_bitrate(gt_sym: np.ndarray, pred_sym: np.ndarray,
