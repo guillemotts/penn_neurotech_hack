@@ -120,6 +120,26 @@ _COLLECT_SYMBOLS = (
     + [("button", name) for name in ["UP", "DOWN", "LEFT", "RIGHT", "LB", "RB"]]
 )
 
+# ── Synapse decoded-controls tap ───────────────────────────────────────────────
+SYNAPSE_URI_DEFAULT = "127.0.0.1:647"
+SYNAPSE_TAP_DEFAULT = "decoded_controls"
+
+# Maps decoder symbol index (0-21, matching _COLLECT_SYMBOLS ordering) → INPUT_NAMES string.
+# _COLLECT_SYMBOLS: [ljoy 0-7][rjoy 0-7][button UP/DOWN/LEFT/RIGHT/LB/RB]
+# ljoy/rjoy sector 0 = RIGHT, sectors go clockwise (from run_cues.py wedge math).
+_DECODE_IDX_TO_ACTION = [
+    # ljoy sectors 0-7 (RIGHT → DOWNRIGHT → DOWN → DOWNLEFT → LEFT → UPLEFT → UP → UPRIGHT)
+    "L_RIGHT", "L_DOWNRIGHT", "L_DOWN", "L_DOWNLEFT",
+    "L_LEFT",  "L_UPLEFT",   "L_UP",   "L_UPRIGHT",
+    # rjoy sectors 0-7
+    "R_RIGHT", "R_DOWNRIGHT", "R_DOWN", "R_DOWNLEFT",
+    "R_LEFT",  "R_UPLEFT",   "R_UP",   "R_UPRIGHT",
+    # buttons: UP→A, DOWN→B, LEFT→X, RIGHT→Y, LB, RB
+    "A", "B", "X", "Y", "LB", "RB",
+]
+assert len(_DECODE_IDX_TO_ACTION) == 22
+
+
 BUTTON_INPUTS = ["A", "B", "X", "Y", "RB", "LB"]
 LEFT_STICK_INPUTS = [
     "L_UPLEFT", "L_UP", "L_UPRIGHT",
@@ -664,6 +684,90 @@ class UDPInputReceiver(threading.Thread):
                     self.out_queue.put(action)
         finally:
             sock.close()
+
+
+class SynapseInputReceiver(threading.Thread):
+    """Background thread: reads decoded_controls Tensor tap → action strings → input_queue."""
+
+    def __init__(
+        self,
+        out_queue: "queue.Queue[str]",
+        uri: str = SYNAPSE_URI_DEFAULT,
+        tap_name: str = SYNAPSE_TAP_DEFAULT,
+    ):
+        super().__init__(daemon=True)
+        self.out_queue = out_queue
+        self.uri = uri
+        self.tap_name = tap_name
+        self._stop_event = threading.Event()
+        self.connected: bool = False
+        self.error: str | None = None   # set if connection failed
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        try:
+            import numpy as _np
+            import synapse as syn
+            from synapse.client.taps import Tap
+            from synapse.api.datatype_pb2 import Tensor
+        except ImportError as exc:
+            self.error = f"synapse not installed: {exc}"
+            return
+
+        try:
+            dev = syn.Device(self.uri)
+            if dev.info() is None:
+                self.error = f"Cannot reach Synapse at {self.uri}"
+                return
+        except Exception as exc:
+            self.error = str(exc)
+            return
+
+        tap = Tap(self.uri)
+        if not tap.connect(self.tap_name):
+            self.error = f"Tap connect failed: {self.tap_name!r}"
+            return
+
+        self.connected = True
+        try:
+            for raw_msg in tap.stream(timeout_ms=100):
+                if self._stop_event.is_set():
+                    break
+                if not raw_msg:
+                    continue
+                tensor = Tensor()
+                tensor.ParseFromString(raw_msg)
+
+                arr = _np.frombuffer(tensor.data, dtype=_np.float32).copy()
+                if tensor.shape:
+                    expected = 1
+                    for d in tensor.shape:
+                        expected *= d
+                    if expected == arr.size:
+                        arr = arr.reshape(tuple(tensor.shape))
+                arr = arr.flatten()
+                if arr.size == 0:
+                    continue
+
+                if arr.size == 1:
+                    # Scalar decoded index
+                    idx = int(arr[0])
+                else:
+                    # Probability / logit vector — pick argmax
+                    idx = int(_np.argmax(arr))
+
+                if 0 <= idx < len(_DECODE_IDX_TO_ACTION):
+                    self.out_queue.put(_DECODE_IDX_TO_ACTION[idx])
+        except Exception:
+            pass
+        finally:
+            try:
+                tap.disconnect()
+            except Exception:
+                pass
+
 
 
 def load_controller_image() -> pygame.Surface | None:
@@ -1237,10 +1341,21 @@ def draw_status_panel(
     font_big: pygame.font.Font,
     font_med: pygame.font.Font,
     font_small: pygame.font.Font,
+    syn_connected: bool = False,
+    syn_error: bool = False,
 ) -> pygame.Rect:
     box = pygame.Rect(STATUS_BOX_X, STATUS_BOX_Y, STATUS_BOX_W, STATUS_BOX_H)
     draw_round_rect(surface, box, WHITE, radius=22)
     pygame.draw.rect(surface, (224, 212, 185), box, width=2, border_radius=22)
+
+    # Synapse connection indicator dot
+    dot_cx = box.right - 16
+    dot_cy = box.y + 16
+    dot_color = GREEN if syn_connected else (RED if syn_error else (200, 200, 200))
+    pygame.draw.circle(surface, dot_color, (dot_cx, dot_cy), 7)
+    pygame.draw.circle(surface, (80, 80, 80), (dot_cx, dot_cy), 7, 1)
+    syn_label = "BCI" if syn_connected else ("ERR" if syn_error else "SYN")
+    draw_text(surface, syn_label, font_small, dot_color, (dot_cx - 18, dot_cy - 8))
 
     # Bit rate
     bitrate = state.bitrate(22)
@@ -2163,8 +2278,24 @@ def main() -> None:
     notes = make_music_notes()
     sardines: list[Sardine] = []
     input_queue: queue.Queue[str] = queue.Queue()
+    # Parse optional Synapse args: --uri <addr> --tap <name>
+    import sys as _sys
+    _args = _sys.argv[1:]
+    synapse_uri = SYNAPSE_URI_DEFAULT
+    synapse_tap = SYNAPSE_TAP_DEFAULT
+    i = 0
+    while i < len(_args):
+        if _args[i] == "--uri" and i + 1 < len(_args):
+            synapse_uri = _args[i + 1]; i += 2
+        elif _args[i] == "--tap" and i + 1 < len(_args):
+            synapse_tap = _args[i + 1]; i += 2
+        else:
+            i += 1
+
     udp_receiver = UDPInputReceiver(input_queue)
     udp_receiver.start()
+    synapse_receiver = SynapseInputReceiver(input_queue, uri=synapse_uri, tap_name=synapse_tap)
+    synapse_receiver.start()
 
     reset_btn_rect: pygame.Rect | None = None
     show_intro = True
@@ -2368,7 +2499,11 @@ def main() -> None:
 
             screen.fill(BG)
             pygame.draw.line(screen, (220, 210, 188), (LEFT_PANEL_W, 20), (LEFT_PANEL_W, HEIGHT - 20), 3)
-            reset_btn_rect = draw_status_panel(screen, state, font_big, font_med, font_small)
+            reset_btn_rect = draw_status_panel(
+            screen, state, font_big, font_med, font_small,
+            syn_connected=synapse_receiver.connected,
+            syn_error=synapse_receiver.error is not None,
+        )
             if state.streak >= 10:
                 draw_lasers(screen, now)
                 draw_disco_ball(screen, now)
@@ -2384,6 +2519,7 @@ def main() -> None:
             pygame.display.flip()
     finally:
         udp_receiver.stop()
+        synapse_receiver.stop()
         pygame.quit()
 
 
