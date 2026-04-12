@@ -28,17 +28,17 @@ import pygame
 # Keyboard test-mode inputs:
 #   Buttons:
 #       1=A, 2=B, 3=X, 4=Y, 5=LB, 6=RB
-#   Left stick 8-way:
-#       Q W E
+#   Left stick 4-way:
+#         W
 #       A   D
-#       Z X C
-#   Right stick 8-way:
-#       U I O
+#         X
+#   Right stick 4-way:
+#         I
 #       J   L
-#       M , .
+#         ,
 #
 # UDP input mode:
-#   Send UTF-8 strings like "A", "RB", "L_UP", "R_DOWNLEFT"
+#   Send UTF-8 strings like "A", "RB", "L_UP", "R_DOWN"
 #   to UDP port 5005 on this machine.
 # ------------------------------------------------------------
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
@@ -128,12 +128,12 @@ SYNAPSE_TAP_DEFAULT = "decoded_controls"
 # _COLLECT_SYMBOLS: [ljoy 0-7][rjoy 0-7][button UP/DOWN/LEFT/RIGHT/LB/RB]
 # ljoy/rjoy sector 0 = RIGHT, sectors go clockwise (from run_cues.py wedge math).
 _DECODE_IDX_TO_ACTION = [
-    # ljoy sectors 0-7 (RIGHT → DOWNRIGHT → DOWN → DOWNLEFT → LEFT → UPLEFT → UP → UPRIGHT)
-    "L_RIGHT", "L_DOWNRIGHT", "L_DOWN", "L_DOWNLEFT",
-    "L_LEFT",  "L_UPLEFT",   "L_UP",   "L_UPRIGHT",
+    # ljoy sectors 0-7 (RIGHT → RIGHT → DOWN → DOWN → LEFT → LEFT → UP → UP, diagonals mapped to nearest cardinal)
+    "L_RIGHT", "L_RIGHT",    "L_DOWN", "L_DOWN",
+    "L_LEFT",  "L_LEFT",     "L_UP",   "L_UP",
     # rjoy sectors 0-7
-    "R_RIGHT", "R_DOWNRIGHT", "R_DOWN", "R_DOWNLEFT",
-    "R_LEFT",  "R_UPLEFT",   "R_UP",   "R_UPRIGHT",
+    "R_RIGHT", "R_RIGHT",    "R_DOWN", "R_DOWN",
+    "R_LEFT",  "R_LEFT",     "R_UP",   "R_UP",
     # buttons: UP→A, DOWN→B, LEFT→X, RIGHT→Y, LB, RB
     "A", "B", "X", "Y", "LB", "RB",
 ]
@@ -142,17 +142,17 @@ assert len(_DECODE_IDX_TO_ACTION) == 22
 
 BUTTON_INPUTS = ["A", "B", "X", "Y", "RB", "LB"]
 LEFT_STICK_INPUTS = [
-    "L_UPLEFT", "L_UP", "L_UPRIGHT",
+    "L_UP",
     "L_LEFT", "L_RIGHT",
-    "L_DOWNLEFT", "L_DOWN", "L_DOWNRIGHT",
+    "L_DOWN",
 ]
 RIGHT_STICK_INPUTS = [
-    "R_UPLEFT", "R_UP", "R_UPRIGHT",
+    "R_UP",
     "R_LEFT", "R_RIGHT",
-    "R_DOWNLEFT", "R_DOWN", "R_DOWNRIGHT",
+    "R_DOWN",
 ]
 INPUT_NAMES = BUTTON_INPUTS + LEFT_STICK_INPUTS + RIGHT_STICK_INPUTS
-assert len(INPUT_NAMES) == 22
+assert len(INPUT_NAMES) == 14
 
 KEY_TO_ACTION = {
     pygame.K_1: "A",
@@ -161,22 +161,14 @@ KEY_TO_ACTION = {
     pygame.K_4: "Y",
     pygame.K_5: "LB",
     pygame.K_6: "RB",
-    pygame.K_q: "L_UPLEFT",
     pygame.K_w: "L_UP",
-    pygame.K_e: "L_UPRIGHT",
     pygame.K_a: "L_LEFT",
     pygame.K_d: "L_RIGHT",
-    pygame.K_z: "L_DOWNLEFT",
     pygame.K_x: "L_DOWN",
-    pygame.K_c: "L_DOWNRIGHT",
-    pygame.K_u: "R_UPLEFT",
     pygame.K_i: "R_UP",
-    pygame.K_o: "R_UPRIGHT",
     pygame.K_j: "R_LEFT",
     pygame.K_l: "R_RIGHT",
-    pygame.K_m: "R_DOWNLEFT",
     pygame.K_COMMA: "R_DOWN",
-    pygame.K_PERIOD: "R_DOWNRIGHT",
 }
 
 ALIAS_MAP = {
@@ -184,18 +176,10 @@ ALIAS_MAP = {
     "LDOWN": "L_DOWN",
     "LLEFT": "L_LEFT",
     "LRIGHT": "L_RIGHT",
-    "LUPLEFT": "L_UPLEFT",
-    "LUPRIGHT": "L_UPRIGHT",
-    "LDOWNLEFT": "L_DOWNLEFT",
-    "LDOWNRIGHT": "L_DOWNRIGHT",
     "RUP": "R_UP",
     "RDOWN": "R_DOWN",
     "RLEFT": "R_LEFT",
     "RRIGHT": "R_RIGHT",
-    "RUPLEFT": "R_UPLEFT",
-    "RUPRIGHT": "R_UPRIGHT",
-    "RDOWNLEFT": "R_DOWNLEFT",
-    "RDOWNRIGHT": "R_DOWNRIGHT",
 }
 
 
@@ -233,8 +217,8 @@ class GameState:
     last_input_text: str = "—"
     elapsed_before_pause: float = 0.0
     run_start_time: float | None = None
-    dancer_scale: float = 0.55
-    dancer_scale_target: float = 0.55
+    dancer_scale: float = 0.60
+    dancer_scale_target: float = 0.60
 
     def reset(self) -> None:
         self.running = False
@@ -249,8 +233,8 @@ class GameState:
         self.last_input_text = "—"
         self.elapsed_before_pause = 0.0
         self.run_start_time = None
-        self.dancer_scale = 0.55
-        self.dancer_scale_target = 0.55
+        self.dancer_scale = 0.60
+        self.dancer_scale_target = 0.60
 
     def start(self) -> None:
         if self.running or self.trial_ended:
@@ -1446,7 +1430,7 @@ def draw_status_panel(
     draw_text(surface, syn_label, font_small, dot_color, (dot_cx - 18, dot_cy - 8))
 
     # Bit rate
-    bitrate = state.bitrate(22)
+    bitrate = state.bitrate(14)
     draw_text(surface, f"Bit rate: {bitrate:.2f} bits/sec", font_big, INK, (box.x + 22, box.y + 14))
 
     # Countdown timer
@@ -1547,26 +1531,16 @@ def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> t
     positions.update(diamond_positions)
 
     d = stick_r + 6
-    diag = int(d * 0.707)
     lx, ly = left_stick_center
     positions["L_UP"]        = (lx,        ly - d)
     positions["L_DOWN"]      = (lx,        ly + d)
     positions["L_LEFT"]      = (lx - d,    ly)
     positions["L_RIGHT"]     = (lx + d,    ly)
-    positions["L_UPLEFT"]    = (lx - diag, ly - diag)
-    positions["L_UPRIGHT"]   = (lx + diag, ly - diag)
-    positions["L_DOWNLEFT"]  = (lx - diag, ly + diag)
-    positions["L_DOWNRIGHT"] = (lx + diag, ly + diag)
-
     rx, ry = right_stick_center
     positions["R_UP"]        = (rx,        ry - d)
     positions["R_DOWN"]      = (rx,        ry + d)
     positions["R_LEFT"]      = (rx - d,    ry)
     positions["R_RIGHT"]     = (rx + d,    ry)
-    positions["R_UPLEFT"]    = (rx - diag, ry - diag)
-    positions["R_UPRIGHT"]   = (rx + diag, ry - diag)
-    positions["R_DOWNLEFT"]  = (rx - diag, ry + diag)
-    positions["R_DOWNRIGHT"] = (rx + diag, ry + diag)
 
     shoulder_rects = {"LB": lb_rect, "RB": rb_rect}
     stick_info = {
@@ -1576,10 +1550,8 @@ def draw_placeholder_controller(surface: pygame.Surface, rect: pygame.Rect) -> t
     return positions, shoulder_rects, stick_info
 
 STICK_DIRECTION_ANGLES = {
-    "L_RIGHT": 0, "L_DOWNRIGHT": 45, "L_DOWN": 90, "L_DOWNLEFT": 135,
-    "L_LEFT": 180, "L_UPLEFT": 225, "L_UP": 270, "L_UPRIGHT": 315,
-    "R_RIGHT": 0, "R_DOWNRIGHT": 45, "R_DOWN": 90, "R_DOWNLEFT": 135,
-    "R_LEFT": 180, "R_UPLEFT": 225, "R_UP": 270, "R_UPRIGHT": 315,
+    "L_RIGHT": 0, "L_DOWN": 90, "L_LEFT": 180, "L_UP": 270,
+    "R_RIGHT": 0, "R_DOWN": 90, "R_LEFT": 180, "R_UP": 270,
 }
 
 
@@ -1640,23 +1612,15 @@ def draw_action_overlay(
             "A":  (0.73, 0.48),
             "B":  (0.84, 0.39),
 
-            "L_UPLEFT":    (0.18, 0.35),
-            "L_UP":        (0.26, 0.31),
-            "L_UPRIGHT":   (0.34, 0.35),
-            "L_LEFT":      (0.18, 0.43),
-            "L_RIGHT":     (0.34, 0.43),
-            "L_DOWNLEFT":  (0.18, 0.51),
-            "L_DOWN":      (0.26, 0.55),
-            "L_DOWNRIGHT": (0.34, 0.51),
+            "L_UP":    (0.26, 0.31),
+            "L_LEFT":  (0.18, 0.43),
+            "L_RIGHT": (0.34, 0.43),
+            "L_DOWN":  (0.26, 0.55),
 
-            "R_UPLEFT":    (0.62, 0.47),
-            "R_UP":        (0.65, 0.45),
-            "R_UPRIGHT":   (0.68, 0.47),
-            "R_LEFT":      (0.60, 0.55),
-            "R_RIGHT":     (0.70, 0.55),
-            "R_DOWNLEFT":  (0.62, 0.63),
-            "R_DOWN":      (0.65, 0.66),
-            "R_DOWNRIGHT": (0.68, 0.63),
+            "R_UP":    (0.65, 0.45),
+            "R_LEFT":  (0.60, 0.55),
+            "R_RIGHT": (0.70, 0.55),
+            "R_DOWN":  (0.65, 0.66),
         }
         if action not in highlight_positions:
             surface.blit(overlay, img_rect.topleft)
@@ -2336,19 +2300,19 @@ def draw_intro_screen(
     pygame.draw.line(surface, (210, 198, 175), (rx, ry + 42), (right_rect.right - 28, ry + 42), 1)
     ry += 58
 
-    dirs = ["UP", "UPRIGHT", "RIGHT", "DOWNRIGHT", "DOWN", "DOWNLEFT", "LEFT", "UPLEFT"]
+    dirs = ["UP", "DOWN", "LEFT", "RIGHT"]
     col_w = (right_rect.w - 56) // 4
 
     for stick_label, prefix in [
-        ("Left Joystick  (8 directions)", "L_"),
-        ("Right Joystick  (8 directions)", "R_"),
+        ("Left Joystick  (4 directions)", "L_"),
+        ("Right Joystick  (4 directions)", "R_"),
     ]:
         draw_text(surface, stick_label, font_med, BLUE, (rx, ry))
         ry += 32
         for i, d in enumerate(dirs):
             draw_text(surface, f"{prefix}{d}", font_small, INK,
-                      (rx + (i % 4) * col_w, ry + (i // 4) * 26))
-        ry += 66
+                      (rx + i * col_w, ry))
+        ry += 42
 
     draw_text(surface, "Buttons  (6)", font_med, BLUE, (rx, ry))
     ry += 32
