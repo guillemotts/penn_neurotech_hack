@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from decoder.postprocess import discretize_stick, discretize_button, combine
+from src.decoder.postprocess import discretize_stick, discretize_button, combine
 
 PRINT_ONLY_ON_CHANGE = False
 PRINT_RAW = True
