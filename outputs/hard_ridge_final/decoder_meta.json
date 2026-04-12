@@ -1,0 +1,35 @@
+{
+  "sample_rate_hz": 30000,
+  "bin_size_raw_frames": 300,
+  "context_bins": 20,
+  "feature_mode": "mean_rms",
+  "best_alpha": 100,
+  "n_train_samples": 89650,
+  "n_seeds": 9,
+  "seeds_used": [
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "onnx_input_shape": [
+    1,
+    2560
+  ],
+  "onnx_output_shape": [
+    1,
+    12
+  ],
+  "synapse_app_parameters": {
+    "input_channels": 64,
+    "frames_per_step": 300,
+    "feature_window": 20,
+    "feature_mode": "mean_rms",
+    "model_name": "model"
+  }
+}
