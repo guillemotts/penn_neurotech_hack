@@ -1,0 +1,20 @@
+{
+  "easy": {
+    "K": 20,
+    "stick_thresh": 0.35,
+    "button_thresh": 0.35,
+    "N": 4,
+    "scoring": "stick+button",
+    "silence_mode": "neutral",
+    "source": "sweep_postproc_v3.csv top-5-bounded-K"
+  },
+  "hard": {
+    "K": 20,
+    "stick_thresh": 0.15,
+    "button_thresh": 0.15,
+    "N": 4,
+    "scoring": "stick+button",
+    "silence_mode": "neutral",
+    "source": "sweep_postproc_v3.csv top-5-bounded-K"
+  }
+}
