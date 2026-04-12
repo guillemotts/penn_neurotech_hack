@@ -2,7 +2,7 @@
   "sample_rate_hz": 30000,
   "bin_size_raw_frames": 300,
   "context_bins": 20,
-  "feature_mode": "mean_rms",
+  "feature_mode": "mean_logrms",
   "best_alpha": 100,
   "n_train_samples": 89650,
   "n_seeds": 9,
@@ -29,7 +29,7 @@
     "input_channels": 64,
     "frames_per_step": 300,
     "feature_window": 20,
-    "feature_mode": "mean_rms",
+    "feature_mode": "mean_logrms",
     "model_name": "model"
   }
 }

@@ -260,7 +260,7 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["easy", "hard"], required=True)
-    parser.add_argument("--feature-mode", choices=["mean", "mean_rms"],
+    parser.add_argument("--feature-mode", choices=["mean", "mean_rms", "mean_logrms"],
                         default="mean_rms")
     parser.add_argument("--context-bins", type=int, default=CONTEXT_BINS)
     parser.add_argument("--out-dir", required=True)

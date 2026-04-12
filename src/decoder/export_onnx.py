@@ -26,7 +26,7 @@ from decoder.ridge_train import scale_y, build_sample_weights, build_windows
 
 ALPHA = 100
 CONTEXT_BINS = 20
-FEATURE_MODE = "mean_rms"
+FEATURE_MODE = "mean_logrms"
 FIT_CHANNELS = slice(0, 10)
 
 
@@ -58,11 +58,12 @@ def main(args):
     t_start = time.time()
     mode = args.mode
     out_dir = args.out_dir
+    feature_mode = args.feature_mode
     cfg = HARD_CFG if mode == "hard" else EASY_CFG
 
     print(f"{'='*60}")
     print(f"  RETRAIN-ALL + ONNX EXPORT  |  mode={mode}")
-    print(f"  alpha={ALPHA}, context_bins={CONTEXT_BINS}, feature_mode={FEATURE_MODE}")
+    print(f"  alpha={ALPHA}, context_bins={CONTEXT_BINS}, feature_mode={feature_mode}")
     print(f"{'='*60}\n")
 
     # ── Phase A: Retrain on ALL data ────────────────────────────────
@@ -72,7 +73,7 @@ def main(args):
     print(f"  Seeds loaded: {seeds} ({len(files)} files)")
 
     print(f"  Building windows ...")
-    Xw_all, Yw_all_raw = build_windows(files, FEATURE_MODE, CONTEXT_BINS)
+    Xw_all, Yw_all_raw = build_windows(files, feature_mode, CONTEXT_BINS)
     print(f"  Windows: {Xw_all.shape}  (features={Xw_all.shape[1]})")
 
     Ys_all = scale_y(Yw_all_raw)
@@ -131,7 +132,7 @@ def main(args):
         "sample_rate_hz": 30000,
         "bin_size_raw_frames": 300,
         "context_bins": CONTEXT_BINS,
-        "feature_mode": FEATURE_MODE,
+        "feature_mode": feature_mode,
         "best_alpha": ALPHA,
         "n_train_samples": int(Xw_all.shape[0]),
         "n_seeds": len(files),
@@ -184,12 +185,14 @@ def main(args):
     print(f"{'='*60}")
 
     # ── RMS compatibility warning ───────────────────────────────────
-    if FEATURE_MODE == "mean_rms":
+    if feature_mode in ("mean_rms", "mean_logrms"):
         print(f"\n{'!'*60}")
-        print(f"  WARNING: This model uses feature_mode='mean_rms' ({feature_dim} inputs).")
+        print(f"  WARNING: This model uses feature_mode='{feature_mode}' ({feature_dim} inputs).")
         print(f"  The Synapse app may expect mean-only features (1280 inputs).")
         print(f"  If the app cannot compute RMS features cheaply, you will need")
         print(f"  a mean-only fallback ONNX (retrain with feature_mode='mean').")
+        if feature_mode == "mean_logrms":
+            print(f"  NOTE: The RMS half requires np.log1p transform at inference time.")
         print(f"{'!'*60}")
 
 
@@ -197,5 +200,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Retrain Ridge on all data + ONNX export")
     parser.add_argument("--mode", choices=["easy", "hard"], required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--feature-mode", choices=["mean", "mean_rms", "mean_logrms"],
+                        default=FEATURE_MODE)
     args = parser.parse_args()
     main(args)

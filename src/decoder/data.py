@@ -100,11 +100,13 @@ def make_windows(Xb_mean, Xb_rms, Yb, context_bins=CONTEXT_BINS,
     """
     Sliding windows with optional RMS features.
     feature_mode:
-      "mean"     -> Xw shape (N, context*C_enc)         = (N, 1280)
-      "mean_rms" -> Xw shape (N, context*C_enc*2)       = (N, 2560)
+      "mean"         -> Xw shape (N, context*C_enc)         = (N, 1280)
+      "mean_rms"     -> Xw shape (N, context*C_enc*2)       = (N, 2560)
+      "mean_logrms"  -> same shape as mean_rms but RMS portion is log1p-transformed
     Returns (Xw: (N, D), Yw: (N, C_gt)).
     """
-    assert feature_mode in ("mean", "mean_rms"), f"Unknown feature_mode: {feature_mode}"
+    assert feature_mode in ("mean", "mean_rms", "mean_logrms"), \
+        f"Unknown feature_mode: {feature_mode}"
     T = Xb_mean.shape[0]
     N = T - context_bins + 1
     assert N > 0, f"Not enough bins ({T}) for context ({context_bins})"
@@ -112,9 +114,12 @@ def make_windows(Xb_mean, Xb_rms, Yb, context_bins=CONTEXT_BINS,
     Xw_mean = _strided_windows(Xb_mean, context_bins)  # (N, ctx, C)
     Xw_flat = Xw_mean.reshape(N, -1)
 
-    if feature_mode == "mean_rms":
+    if feature_mode in ("mean_rms", "mean_logrms"):
         Xw_rms = _strided_windows(Xb_rms, context_bins)
-        Xw_flat = np.concatenate([Xw_flat, Xw_rms.reshape(N, -1)], axis=1)
+        rms_flat = Xw_rms.reshape(N, -1)
+        if feature_mode == "mean_logrms":
+            rms_flat = np.log1p(rms_flat)
+        Xw_flat = np.concatenate([Xw_flat, rms_flat], axis=1)
 
     Yw = Yb[context_bins - 1:].copy()
     return Xw_flat, Yw
