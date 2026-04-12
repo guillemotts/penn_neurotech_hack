@@ -1,37 +1,26 @@
 """
 synapse_to_udp.py  --  Bridge: Synapse decoder tap → dance_sim_game.py UDP
 
-Usage:
-    python synapse_to_udp.py [<device_uri>] [<tap_name>] [--host <host>] [--port <port>]
-                             [--joy-thresh <float>] [--btn-thresh <float>]
-
-Defaults:
-    device_uri  = 127.0.0.1:647
-    tap_name    = decoded_controls
-    host        = 127.0.0.1
-    port        = 5005  (matches dance_sim_game.py UDP_PORT)
-
-The tap sends a Tensor protobuf with a float32 array of shape [12]:
-    [0] L Up/Down axis      (+→ L_UP,    -→ L_DOWN)
-    [1] L Left/Right axis   (+→ L_RIGHT, -→ L_LEFT)
-    [2] R Up/Down axis      (+→ R_UP,    -→ R_DOWN)
-    [3] R Left/Right axis   (+→ R_RIGHT, -→ R_LEFT)
-    [4] Y  [5] A  [6] X  [7] B  [8] LB  [9] RB  [10] LT  [11] RT
-
-The dominant action across all axes and buttons is forwarded as a UTF-8 UDP
-packet to the game, covering all 14 possible inputs.
+Applies causal smoothing (ring buffer of K ticks) + scaled-space thresholds
+matching the ridge decoder's output space ([-1,1] sticks, [0,1] buttons).
+Emits bimanual: left stick, right stick, and button actions can each fire
+independently per tick.
 """
 
 import argparse
+import json
 import socket
 import sys
+from collections import deque
+from pathlib import Path
 
 import numpy as np
 from synapse.client.taps import Tap
 from synapse.api.datatype_pb2 import Tensor
 
 
-# Axis index → (positive_name, negative_name)
+DEFAULTS_PATH = Path(__file__).resolve().parent / "src" / "decoder" / "postproc_defaults.json"
+
 AXIS_NAMES = {
     0: ("L_UP",    "L_DOWN"),
     1: ("L_RIGHT", "L_LEFT"),
@@ -39,7 +28,6 @@ AXIS_NAMES = {
     3: ("R_RIGHT", "R_LEFT"),
 }
 
-# Button index within values[4:10] → UDP string
 BUTTON_NAMES = {
     0: "Y",
     1: "A",
@@ -47,6 +35,8 @@ BUTTON_NAMES = {
     3: "B",
     4: "LB",
     5: "RB",
+    6: "LT",
+    7: "RT",
 }
 
 
@@ -61,49 +51,81 @@ def tensor_to_numpy(tensor: Tensor) -> np.ndarray:
     return np.asarray(arr).reshape(-1)
 
 
-def decode_action(values: np.ndarray, joy_thresh: float, btn_thresh: float) -> str:
-    """Return the dominant action string, or 'NOTHING' if below thresholds."""
-    if values.shape[0] < 10:
-        return "NOTHING"
+def scale_to_model_space(raw: np.ndarray) -> np.ndarray:
+    """raw: length-12 int16-ish → [-1,1] sticks (0:4), [0,1] buttons (4:12)."""
+    scaled = raw.astype(np.float32) / 32767.0
+    scaled[0:4] = np.clip(scaled[0:4], -1.0, 1.0)
+    scaled[4:12] = np.clip(scaled[4:12], 0.0, 1.0)
+    return scaled
 
-    axes = values[:4]
-    buttons = values[4:10]
 
-    best_axis_idx = int(np.argmax(np.abs(axes)))
-    best_axis_val = float(axes[best_axis_idx])
-    best_axis_mag = abs(best_axis_val)
+def decode_actions(y_smooth: np.ndarray,
+                   joy_thresh: float,
+                   btn_thresh: float) -> list[str]:
+    """Bimanual: left stick, right stick, and button emit independently.
+    Returns 0, 1, 2, or 3 action strings per tick."""
+    actions = []
 
-    best_btn_local = int(np.argmax(buttons))
-    best_btn_val = float(buttons[best_btn_local])
+    # Left stick (channels 0, 1)
+    lx, ly = float(y_smooth[0]), float(y_smooth[1])
+    l_mag = np.sqrt(lx * lx + ly * ly)
+    if l_mag >= joy_thresh:
+        # Pick dominant axis of left stick
+        if abs(lx) >= abs(ly):
+            actions.append(AXIS_NAMES[1][0] if lx >= 0 else AXIS_NAMES[1][1])
+        else:
+            actions.append(AXIS_NAMES[0][0] if ly >= 0 else AXIS_NAMES[0][1])
 
-    candidates = []
+    # Right stick (channels 2, 3)
+    rx, ry = float(y_smooth[2]), float(y_smooth[3])
+    r_mag = np.sqrt(rx * rx + ry * ry)
+    if r_mag >= joy_thresh:
+        if abs(rx) >= abs(ry):
+            actions.append(AXIS_NAMES[3][0] if rx >= 0 else AXIS_NAMES[3][1])
+        else:
+            actions.append(AXIS_NAMES[2][0] if ry >= 0 else AXIS_NAMES[2][1])
 
-    if best_axis_mag >= joy_thresh:
-        pos_name, neg_name = AXIS_NAMES[best_axis_idx]
-        candidates.append((best_axis_mag, pos_name if best_axis_val >= 0 else neg_name))
+    # Buttons (channels 4..11)
+    buttons = y_smooth[4:12]
+    best_btn = int(np.argmax(buttons))
+    if float(buttons[best_btn]) >= btn_thresh:
+        actions.append(BUTTON_NAMES[best_btn])
 
-    if best_btn_val >= btn_thresh:
-        candidates.append((best_btn_val, BUTTON_NAMES[best_btn_local]))
-
-    if not candidates:
-        return "NOTHING"
-
-    return max(candidates, key=lambda x: x[0])[1]
+    return actions
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Bridge Synapse tap to dance game UDP")
-    p.add_argument("uri",           nargs="?", default="127.0.0.1:647",      help="Synapse device URI")
-    p.add_argument("tap_name",      nargs="?", default="decoded_controls",    help="Tap name")
-    p.add_argument("--host",        default="127.0.0.1",                      help="UDP destination host")
-    p.add_argument("--port",        type=int,  default=5005,                  help="UDP destination port")
-    p.add_argument("--joy-thresh",  type=float, default=2500.0,               help="Joystick activation threshold")
-    p.add_argument("--btn-thresh",  type=float, default=1200.0,               help="Button activation threshold")
+    p.add_argument("uri",           nargs="?", default="127.0.0.1:647")
+    p.add_argument("tap_name",      nargs="?", default="decoded_controls")
+    p.add_argument("--host",        default="127.0.0.1")
+    p.add_argument("--port",        type=int, default=5005)
+    p.add_argument("--mode",        choices=["easy", "hard"], default="easy")
+    p.add_argument("--K",           type=int, default=None,
+                   help="Override smoother window size from defaults")
+    p.add_argument("--joy-thresh",  type=float, default=None,
+                   help="Override stick threshold (scaled space, e.g. 0.10)")
+    p.add_argument("--btn-thresh",  type=float, default=None,
+                   help="Override button threshold (scaled space, e.g. 0.15)")
     args = p.parse_args(argv)
+
+    with open(DEFAULTS_PATH) as f:
+        all_defaults = json.load(f)
+    cfg = dict(all_defaults[args.mode])
+    if args.K is not None:
+        cfg["K"] = args.K
+    if args.joy_thresh is not None:
+        cfg["stick_thresh"] = args.joy_thresh
+    if args.btn_thresh is not None:
+        cfg["button_thresh"] = args.btn_thresh
+
+    K = cfg["K"]
+    joy_thresh = cfg["stick_thresh"]
+    btn_thresh = cfg["button_thresh"]
 
     print(f"Connecting to {args.uri}, tap '{args.tap_name}'")
     print(f"Forwarding decoded actions → UDP {args.host}:{args.port}")
-    print(f"Thresholds: joystick={args.joy_thresh}  button={args.btn_thresh}")
+    print(f"mode={args.mode}  K={K}  joy_thresh={joy_thresh}  btn_thresh={btn_thresh}")
 
     tap = Tap(args.uri, verbose=True)
 
@@ -116,8 +138,8 @@ def main(argv=None):
         sys.exit(1)
 
     tap.connect(args.tap_name)
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    buf = deque(maxlen=K)
 
     try:
         for raw_msg in tap.stream(timeout_ms=100):
@@ -128,15 +150,21 @@ def main(argv=None):
             tensor.ParseFromString(raw_msg)
             values = tensor_to_numpy(tensor)
 
-            if values.size == 0:
+            if values.size < 12:
                 continue
 
-            action = decode_action(values, args.joy_thresh, args.btn_thresh)
-            if action == "NOTHING":
-                continue
+            scaled = scale_to_model_space(values[:12].copy())
+            buf.append(scaled)
 
-            sock.sendto(action.encode("utf-8"), (args.host, args.port))
-            print(f"→  {action}")
+            if len(buf) < K:
+                continue  # warmup
+
+            y_smooth = np.mean(buf, axis=0)
+            actions = decode_actions(y_smooth, joy_thresh, btn_thresh)
+
+            for action in actions:
+                sock.sendto(action.encode("utf-8"), (args.host, args.port))
+                print(f"→  {action}")
 
     except KeyboardInterrupt:
         print("\nStopped.")
