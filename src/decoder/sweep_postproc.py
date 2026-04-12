@@ -20,10 +20,11 @@ from decoder.postprocess import (
     proxy_bitrate,
 )
 
-K_VALUES = [1, 3, 5, 7, 10]
+K_VALUES = [10, 15, 20, 30, 50]
 STICK_THRESHOLDS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]
-BUTTON_THRESHOLDS = [0.0, 0.20, 0.35, 0.50, 0.65]
-N_VALUES = [4, 8]
+BUTTON_THRESHOLDS = [0.20, 0.35, 0.50, 0.65]
+N_VALUES = [4, 6, 8]
+BIN_MS = 10  # ms per bin
 
 
 def main(args):
@@ -87,15 +88,16 @@ def main(args):
                                 "t_sec": result["t_sec"],
                                 "B": result["B"],
                                 "accuracy_emitted": result["accuracy_emitted"],
+                                "effective_latency_ms": K * BIN_MS,
                             }
                             rows.append(row)
 
     # ── Write CSV ─────────────────────────────────────────────────────
-    csv_path = os.path.join(out_dir, "sweep_postproc.csv")
+    csv_path = os.path.join(out_dir, "sweep_postproc_v2.csv")
     fieldnames = [
         "mode", "scoring", "silence_mode", "K", "stick_thresh",
         "button_thresh", "N", "N_eff", "S_c", "S_i", "n_noop",
-        "n_total", "t_sec", "B", "accuracy_emitted",
+        "n_total", "t_sec", "B", "accuracy_emitted", "effective_latency_ms",
     ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -104,21 +106,29 @@ def main(args):
     print(f"\nWrote {len(rows)} rows to {csv_path}")
 
     # ── Top-5 per (scoring, silence_mode) ─────────────────────────────
-    for scoring in ["stick_only", "stick_button"]:
-        for silence_mode in ["neutral", "correct"]:
+    header = (f"  {'K':>3s}  {'lat':>5s}  {'st_th':>5s}  {'bt_th':>5s}  {'N':>3s}  "
+              f"{'B':>8s}  {'acc':>6s}  {'S_c':>6s}  {'S_i':>6s}  {'noop':>6s}")
+
+    def fmt_row(r):
+        return (f"  {r['K']:>3d}  {r['effective_latency_ms']:>4d}ms  "
+                f"{r['stick_thresh']:>5.2f}  {r['button_thresh']:>5.2f}  "
+                f"{r['N']:>3d}  {r['B']:>8.4f}  {r['accuracy_emitted']:>6.3f}  "
+                f"{r['S_c']:>6d}  {r['S_i']:>6d}  {r['n_noop']:>6d}")
+
+    for silence_mode in ["neutral", "correct"]:
+        print(f"\n{'#'*70}")
+        print(f"# silence_mode = {silence_mode}")
+        print(f"{'#'*70}")
+        for scoring in ["stick_only", "stick_button"]:
             subset = [r for r in rows
                       if r["scoring"] == scoring and r["silence_mode"] == silence_mode]
             subset.sort(key=lambda r: r["B"], reverse=True)
             print(f"\n{'='*70}")
             print(f"Top-5: scoring={scoring}, silence_mode={silence_mode}")
             print(f"{'='*70}")
-            print(f"  {'K':>3s}  {'st_th':>5s}  {'bt_th':>5s}  {'N':>3s}  "
-                  f"{'B':>8s}  {'acc':>6s}  {'S_c':>6s}  {'S_i':>6s}  {'noop':>6s}")
+            print(header)
             for r in subset[:5]:
-                print(f"  {r['K']:>3d}  {r['stick_thresh']:>5.2f}  "
-                      f"{r['button_thresh']:>5.2f}  {r['N']:>3d}  "
-                      f"{r['B']:>8.4f}  {r['accuracy_emitted']:>6.3f}  "
-                      f"{r['S_c']:>6d}  {r['S_i']:>6d}  {r['n_noop']:>6d}")
+                print(fmt_row(r))
 
 
 if __name__ == "__main__":
