@@ -1,4 +1,4 @@
-Penn Neurotech Hack — Science Track
+## Penn Neurotech Hack — Science Track
 
 We chose N = 14, as we thought it would be too difficult to learn an alphabet any bigger than that. 
 We use a windowed ridge regression decoder: neural data from the past N bins is flattened, standardized, and mapped linearly to controller outputs. Ridge is robust to noise and multicollinearity, which is critical for high-dimensional neural inputs.
@@ -13,3 +13,6 @@ The entire pipeline is causal and efficient, making it suitable for real-time de
 3. synapsectl -u "tamarin-of-silent-virtuosity" apps deploy .
 4. synapsectl -u "tamarin-of-silent-virtuosity" deploy-model model.onnx --name model
 5. synapsectl -u "tamarin-of-silent-virtuosity" start ./config/simulator_32ch.json
+
+### How To Run The Game
+1. Run run.sh to start the game.
