@@ -128,6 +128,14 @@ def test_alphabet_n10_coverage():
     assert unique.issubset(set(n10)), f"unexpected symbols: {unique - set(n10)}"
     assert set(n10).issubset(unique), f"missing symbols: {set(n10) - unique}"
 
+def test_alphabet_n14_coverage():
+    n14 = ALPHABETS["n14"]
+    cues = generate_cue_sequence(2000, seed=0, alphabet=n14)
+    assert cues.shape == (2000,)
+    unique = set(cues.tolist())
+    assert unique.issubset(set(n14)), f"unexpected symbols: {unique - set(n14)}"
+    assert set(n14).issubset(unique), f"missing symbols: {set(n14) - unique}"
+
 def test_alphabet_full_default():
     cues = generate_cue_sequence(22000, seed=0)
     assert cues.min() >= 0 and cues.max() < 22

@@ -13,6 +13,7 @@ SYMBOL_STRS = [f"{t}_{v}" for t, v in SYMBOLS]
 ALPHABETS = {
     "full": list(range(22)),  # all 22
     "n10": [0, 2, 4, 6, 16, 17, 18, 19, 20, 21],  # 4 ljoy cardinals + 6 buttons
+    "n14": [0, 2, 4, 6, 8, 10, 12, 14, 16, 17, 18, 19, 20, 21],
 }
 
 COLOR_LEFT = (80, 200, 255)
