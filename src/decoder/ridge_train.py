@@ -4,6 +4,7 @@ ridge_train.py -- Ridge regression decoder, matching teammate's notebook approac
 Usage:
     python -m decoder.ridge_train --mode easy --out-dir outputs/easy_ridge
     python -m decoder.ridge_train --mode hard --feature-mode mean_rms --out-dir outputs/hard_ridge_rms
+    python -m decoder.ridge_train --mode hard --feature-mode mean_rms --context-bins 40 --out-dir outputs/hard_ridge_rms_ctx40
 """
 import argparse
 import json
@@ -99,12 +100,12 @@ def proxy_bitrate(Y_true_scaled, Y_pred_scaled, N=8, mag_thresh=0.3, window_sec=
 
 
 # ── Windows helper ───────────────────────────────────────────────────
-def build_windows(file_list, feature_mode):
+def build_windows(file_list, feature_mode, context_bins):
     """Build flattened Xw and raw Yw from file list."""
     Xw_parts, Yw_parts = [], []
     for seed, Xb_mean, Xb_rms, Yb in file_list:
         Xw, Yw = make_windows(Xb_mean, Xb_rms, Yb,
-                              context_bins=CONTEXT_BINS,
+                              context_bins=context_bins,
                               feature_mode=feature_mode)
         Xw_parts.append(Xw)
         Yw_parts.append(Yw)
@@ -115,6 +116,9 @@ def build_windows(file_list, feature_mode):
 def train(args):
     t_start = time.time()
     feature_mode = args.feature_mode
+    context_bins = args.context_bins
+
+    print(f"context_bins={context_bins}, feature_mode={feature_mode}")
 
     # ── 1. Load ──────────────────────────────────────────────────────
     if args.mode == "hard":
@@ -138,8 +142,8 @@ def train(args):
 
     # ── 2. Build windows ─────────────────────────────────────────────
     print(f"Building windows (feature_mode={feature_mode}) ...")
-    Xw_tr, Yw_tr_raw = build_windows(train_files, feature_mode)
-    Xw_val, Yw_val_raw = build_windows(val_files, feature_mode)
+    Xw_tr, Yw_tr_raw = build_windows(train_files, feature_mode, context_bins)
+    Xw_val, Yw_val_raw = build_windows(val_files, feature_mode, context_bins)
     print(f"  Train: {Xw_tr.shape} windows, Val: {Xw_val.shape} windows")
 
     # ── 3. Scale Y ───────────────────────────────────────────────────
@@ -237,6 +241,7 @@ def train(args):
     metrics = {
         "best_alpha": best_alpha,
         "feature_mode": feature_mode,
+        "context_bins": context_bins,
         "per_channel_corr": corrs.tolist(),
         "per_channel_mae": mae.tolist(),
         "mean_corr_active": mean_corr_active,
@@ -257,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["easy", "hard"], required=True)
     parser.add_argument("--feature-mode", choices=["mean", "mean_rms"],
                         default="mean_rms")
+    parser.add_argument("--context-bins", type=int, default=CONTEXT_BINS)
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
     train(args)
