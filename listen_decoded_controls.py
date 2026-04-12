@@ -76,6 +76,7 @@ def run_live(args, cfg):
     N = cfg["N"]
     stick_thresh = cfg["stick_thresh"]
     button_thresh = cfg["button_thresh"]
+    debug_scale = args.debug_scale
     names = build_symbol_names(N)
     buf = deque(maxlen=K)
 
@@ -97,15 +98,23 @@ def run_live(args, cfg):
     tap.connect(args.tap)
 
     last_sym = None
+    tick = 0
 
     try:
         for message in tap.stream():
             tensor = Tensor()
             tensor.ParseFromString(message)
             values = tensor_to_numpy(tensor)
+            raw10 = values[:10]
 
-            scaled = scale_to_model_space(values[:10].copy())
+            if debug_scale and tick % 10 == 0:
+                print(f"  [debug-scale t={tick}] "
+                      f"min={raw10.min():.1f} max={raw10.max():.1f} "
+                      f"mean={raw10.mean():.1f}")
+
+            scaled = scale_to_model_space(raw10.copy())
             buf.append(scaled)
+            tick += 1
 
             ts_ns = getattr(tensor, "timestamp_ns", 0)
 
@@ -140,7 +149,7 @@ def run_live(args, cfg):
         tap.disconnect()
 
 
-def run_dry(cfg):
+def run_dry(cfg, debug_scale=False):
     K = cfg["K"]
     N = cfg["N"]
     stick_thresh = cfg["stick_thresh"]
@@ -165,6 +174,11 @@ def run_dry(cfg):
     east_emitted = False
 
     for i, raw in enumerate(raw_tensors):
+        if debug_scale and i % 10 == 0:
+            print(f"  [debug-scale t={i}] "
+                  f"min={raw.min():.1f} max={raw.max():.1f} "
+                  f"mean={raw.mean():.1f}")
+
         scaled = scale_to_model_space(raw.copy())
         buf.append(scaled)
 
@@ -207,15 +221,25 @@ def main():
     parser.add_argument("--mode", choices=["easy", "hard"], default="easy")
     parser.add_argument("--dry-run", action="store_true",
                         help="Feed synthetic tensors without connecting to Synapse")
+    parser.add_argument("--debug-scale", action="store_true",
+                        help="Print raw pre-scaling tensor stats every 10 ticks")
+    parser.add_argument("--stick-thresh", type=float, default=None,
+                        help="Override stick threshold from defaults")
+    parser.add_argument("--button-thresh", type=float, default=None,
+                        help="Override button threshold from defaults")
     args = parser.parse_args()
 
     with open(DEFAULTS_PATH) as f:
         all_defaults = json.load(f)
-    cfg = all_defaults[args.mode]
+    cfg = dict(all_defaults[args.mode])
+    if args.stick_thresh is not None:
+        cfg["stick_thresh"] = args.stick_thresh
+    if args.button_thresh is not None:
+        cfg["button_thresh"] = args.button_thresh
     print(f"Loaded defaults for mode={args.mode}: {cfg}")
 
     if args.dry_run:
-        run_dry(cfg)
+        run_dry(cfg, debug_scale=args.debug_scale)
     else:
         if args.device is None:
             parser.error("device is required unless --dry-run is used")
