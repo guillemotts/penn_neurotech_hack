@@ -1,117 +1,85 @@
-import sys
+"""
+listen_decoded_controls.py -- Stream decoded controller tensors from a
+Synapse tap, apply causal smoothing + discretization using sweep-tuned
+defaults from src/decoder/postproc_defaults.json, and emit symbol names.
+
+Usage:
+    python listen_decoded_controls.py <device-ip> [tap_name] [--mode easy|hard]
+    python listen_decoded_controls.py --dry-run [--mode easy|hard]
+"""
+import argparse
+import json
+import os
+from collections import deque
+from pathlib import Path
+
 import numpy as np
 
-from synapse.client.taps import Tap
+from decoder.postprocess import discretize_stick, discretize_button, combine
 
-try:
-    from synapse.api.datatype_pb2 import Tensor
-except ImportError:
-    from api.datatype_pb2 import Tensor
-
-
-# ----------------------------
-# Tune these if needed
-# ----------------------------
-JOY_THRESHOLD = 2500.0
-BUTTON_THRESHOLD = 1200.0
-
-PRINT_ONLY_ON_CHANGE = False   # set True to reduce spam
+PRINT_ONLY_ON_CHANGE = False
 PRINT_RAW = True
 
-
-AXIS_NAMES = {
-    0: ("L_UP", "L_DOWN"),
-    1: ("L_RIGHT", "L_LEFT"),
-    2: ("R_UP", "R_DOWN"),
-    3: ("R_RIGHT", "R_LEFT"),
-}
-
-BUTTON_NAMES = {
-    4: "Y",
-    5: "A",
-    6: "X",
-    7: "B",
-    8: "LB",
-    9: "RB",
-    # 10: "LT",   # ignored
-    # 11: "RT",   # ignored
-}
+DEFAULTS_PATH = Path(__file__).resolve().parent / "src" / "decoder" / "postproc_defaults.json"
 
 
-def tensor_to_numpy(tensor: Tensor) -> np.ndarray:
+# ── Symbol name maps ─────────────────────────────────────────────────
+
+def build_symbol_names(N):
+    if N == 4:
+        stick = {0: "E", 1: "N", 2: "W", 3: "S"}
+    elif N == 6:
+        stick = {0: "E", 1: "ENE", 2: "NNW", 3: "W", 4: "WSW", 5: "SSE"}
+    elif N == 8:
+        stick = {0: "E", 1: "NE", 2: "N", 3: "NW", 4: "W", 5: "SW", 6: "S", 7: "SE"}
+    else:
+        stick = {i: f"S{i}" for i in range(N)}
+    buttons = {
+        N: "Y", N + 1: "A", N + 2: "X",
+        N + 3: "B", N + 4: "LB", N + 5: "RB",
+    }
+    return {**stick, **buttons}
+
+
+# ── Scale conversion (matches ridge_train.py:scale_y) ────────────────
+
+def scale_to_model_space(raw: np.ndarray) -> np.ndarray:
+    scaled = raw / 32767.0
+    scaled[0:4] = np.clip(scaled[0:4], -1.0, 1.0)
+    scaled[4:10] = np.clip(scaled[4:10], 0.0, 1.0)
+    return scaled
+
+
+# ── Tensor parsing (Synapse protobuf) ────────────────────────────────
+
+def tensor_to_numpy(tensor) -> np.ndarray:
     arr = np.frombuffer(tensor.data, dtype=np.float32)
-
     if len(tensor.shape) > 0:
         expected = 1
         for d in tensor.shape:
             expected *= d
         if expected == arr.size:
             arr = arr.reshape(tuple(tensor.shape))
-
     return np.asarray(arr).reshape(-1)
 
 
-def decode_action(values: np.ndarray) -> str:
-    if values.shape[0] < 12:
-        return "INVALID_OUTPUT"
+# ── Main ────────────────────────────────��────────────────────────────
 
-    axes = values[:4]
-    buttons = values[4:10]
+def run_live(args, cfg):
+    from synapse.client.taps import Tap
+    try:
+        from synapse.api.datatype_pb2 import Tensor
+    except ImportError:
+        from api.datatype_pb2 import Tensor
 
-    best_axis_idx = int(np.argmax(np.abs(axes)))
-    best_axis_val = float(axes[best_axis_idx])
-    best_axis_mag = abs(best_axis_val)
+    K = cfg["K"]
+    N = cfg["N"]
+    stick_thresh = cfg["stick_thresh"]
+    button_thresh = cfg["button_thresh"]
+    names = build_symbol_names(N)
+    buf = deque(maxlen=K)
 
-    best_button_local_idx = int(np.argmax(buttons))
-    best_button_val = float(buttons[best_button_local_idx])
-    best_button_global_idx = 4 + best_button_local_idx
-
-    candidates = []
-
-    if best_axis_mag >= JOY_THRESHOLD:
-        pos_name, neg_name = AXIS_NAMES[best_axis_idx]
-        axis_action = pos_name if best_axis_val >= 0 else neg_name
-        candidates.append(("axis", best_axis_mag, axis_action))
-
-    if best_button_val >= BUTTON_THRESHOLD:
-        button_action = BUTTON_NAMES[best_button_global_idx]
-        candidates.append(("button", best_button_val, button_action))
-
-    if not candidates:
-        return "NOTHING"
-
-    # Winner-take-all, since only one control should be active at a time
-    winner = max(candidates, key=lambda x: x[1])
-    return winner[2]
-
-
-def format_named_values(values: np.ndarray) -> str:
-    return (
-        f"LUD={values[0]:8.1f}  "
-        f"LLR={values[1]:8.1f}  "
-        f"RUD={values[2]:8.1f}  "
-        f"RLR={values[3]:8.1f}  "
-        f"Y={values[4]:8.1f}  "
-        f"A={values[5]:8.1f}  "
-        f"X={values[6]:8.1f}  "
-        f"B={values[7]:8.1f}  "
-        f"LB={values[8]:8.1f}  "
-        f"RB={values[9]:8.1f}  "
-        f"LT={values[10]:8.1f}  "
-        f"RT={values[11]:8.1f}"
-    )
-
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python listen_decoded_controls.py <device-ip-or-name> [tap_name]")
-        sys.exit(1)
-
-    device_uri = sys.argv[1]
-    tap_name = sys.argv[2] if len(sys.argv) > 2 else "decoded_controls"
-
-    tap = Tap(device_uri, verbose=True)
-
+    tap = Tap(args.device, verbose=True)
     taps = tap.list_taps()
     tap_names = [t.name for t in taps]
 
@@ -119,40 +87,139 @@ def main():
     for name in tap_names:
         print(" -", name)
 
-    if tap_name not in tap_names:
-        print(f"Tap '{tap_name}' not found.")
-        sys.exit(1)
+    if args.tap not in tap_names:
+        print(f"Tap '{args.tap}' not found.")
+        return
 
-    print(f"\nConnecting to tap '{tap_name}' on {device_uri} ...")
-    print(f"Using JOY_THRESHOLD={JOY_THRESHOLD}, BUTTON_THRESHOLD={BUTTON_THRESHOLD}\n")
-    tap.connect(tap_name)
+    print(f"\nConnecting to tap '{args.tap}' on {args.device} ...")
+    print(f"mode={args.mode}  K={K}  N={N}  stick_thresh={stick_thresh}  "
+          f"button_thresh={button_thresh}\n")
+    tap.connect(args.tap)
 
-    last_action = None
+    last_sym = None
 
     try:
         for message in tap.stream():
             tensor = Tensor()
             tensor.ParseFromString(message)
-
             values = tensor_to_numpy(tensor)
-            action = decode_action(values)
 
-            if PRINT_ONLY_ON_CHANGE and action == last_action:
-                continue
+            scaled = scale_to_model_space(values[:10].copy())
+            buf.append(scaled)
 
             ts_ns = getattr(tensor, "timestamp_ns", 0)
 
-            if PRINT_RAW:
-                print(f"[{ts_ns}] action={action:8s} raw={values}")
-            else:
-                print(f"[{ts_ns}] action={action:8s} {format_named_values(values)}")
+            if len(buf) < K:
+                print(f"[{ts_ns}] warmup ({len(buf)}/{K})")
+                continue
 
-            last_action = action
+            y_smooth = np.mean(buf, axis=0)
+            row = y_smooth[None, :]
+
+            stick_sym = discretize_stick(row, N, stick_thresh)[0]
+            button_sym = discretize_button(row, button_thresh, stick_offset=N)[0]
+            sym = int(combine(
+                np.array([stick_sym]), np.array([button_sym]))[0])
+
+            if PRINT_ONLY_ON_CHANGE and sym == last_sym:
+                continue
+
+            name = names.get(sym, "NO_OP") if sym >= 0 else "NO_OP"
+            if PRINT_RAW:
+                print(f"[{ts_ns}] symbol={sym:3d} ({name:4s})  "
+                      f"smooth=[{y_smooth[0]:+.3f},{y_smooth[1]:+.3f}] "
+                      f"btn_max={y_smooth[4:10].max():.3f}")
+            else:
+                print(f"[{ts_ns}] symbol={sym:3d} ({name})")
+
+            last_sym = sym
 
     except KeyboardInterrupt:
         print("\nStopping listener.")
     finally:
         tap.disconnect()
+
+
+def run_dry(cfg):
+    K = cfg["K"]
+    N = cfg["N"]
+    stick_thresh = cfg["stick_thresh"]
+    button_thresh = cfg["button_thresh"]
+    names = build_symbol_names(N)
+    buf = deque(maxlen=K)
+
+    # Synthetic tensors: K east, K button-A, K idle (total 3*K)
+    # First K fill the buffer with east → must emit E at t=K-1
+    raw_tensors = []
+    for _ in range(K):
+        raw_tensors.append(np.array([30000, 0, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+    for _ in range(K):
+        raw_tensors.append(np.array([0, 0, 0, 0, 0, 25000, 0, 0, 0, 0], dtype=np.float32))
+    for _ in range(K):
+        raw_tensors.append(np.zeros(10, dtype=np.float32))
+
+    print(f"Dry run: mode cfg K={K} N={N} stick_thresh={stick_thresh} "
+          f"button_thresh={button_thresh}")
+    print(f"Feeding {len(raw_tensors)} synthetic tensors\n")
+
+    east_emitted = False
+
+    for i, raw in enumerate(raw_tensors):
+        scaled = scale_to_model_space(raw.copy())
+        buf.append(scaled)
+
+        if len(buf) < K:
+            print(f"[t={i:3d}] warmup ({len(buf)}/{K})")
+            continue
+
+        y_smooth = np.mean(buf, axis=0)
+        row = y_smooth[None, :]
+
+        stick_sym = discretize_stick(row, N, stick_thresh)[0]
+        button_sym = discretize_button(row, button_thresh, stick_offset=N)[0]
+        sym = int(combine(
+            np.array([stick_sym]), np.array([button_sym]))[0])
+
+        name = names.get(sym, "NO_OP") if sym >= 0 else "NO_OP"
+        print(f"[t={i:3d}] symbol={sym:3d} ({name:4s})  "
+              f"smooth=[{y_smooth[0]:+.3f},{y_smooth[1]:+.3f}] "
+              f"btn_max={y_smooth[4:10].max():.3f}")
+
+        # After K east tensors fill the buffer, must emit sector 0
+        if i == K - 1 and sym == 0:
+            east_emitted = True
+
+    # Assertion: pure east vector repeated K times → symbol 0 (E)
+    assert east_emitted, (
+        f"FAIL: expected symbol 0 (E) at t={K - 1} after K={K} "
+        f"east tensors filled buffer"
+    )
+    print("\nASSERT PASSED: pure east [30000,0,...] × K → symbol 0 (E)")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Listen to decoded controls with smoother + discretizer")
+    parser.add_argument("device", nargs="?", default=None,
+                        help="Synapse device IP or name")
+    parser.add_argument("tap", nargs="?", default="decoded_controls",
+                        help="Tap name (default: decoded_controls)")
+    parser.add_argument("--mode", choices=["easy", "hard"], default="easy")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Feed synthetic tensors without connecting to Synapse")
+    args = parser.parse_args()
+
+    with open(DEFAULTS_PATH) as f:
+        all_defaults = json.load(f)
+    cfg = all_defaults[args.mode]
+    print(f"Loaded defaults for mode={args.mode}: {cfg}")
+
+    if args.dry_run:
+        run_dry(cfg)
+    else:
+        if args.device is None:
+            parser.error("device is required unless --dry-run is used")
+        run_live(args, cfg)
 
 
 if __name__ == "__main__":
