@@ -1,0 +1,50 @@
+{
+  "data_dir": "/content/drive/MyDrive/global_neurotech_hack_2026/medium_data",
+  "files": [
+    "smoke_Ani_seed1.h5",
+    "smoke_Ani_seed2.h5",
+    "smoke_Ani_seed3.h5",
+    "smoke_Ani_seed4.h5",
+    "smoke_Ani_seed5.h5"
+  ],
+  "dataset_key": "acquisition/ElectricalSeries",
+  "total_channels": 76,
+  "encoded_channels": 64,
+  "ground_truth_channels": 12,
+  "predicted_channels": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "constant_zero_channels": [
+    10,
+    11
+  ],
+  "sample_rate_hz": 32000,
+  "bin_size_raw_frames": 320,
+  "bin_duration_ms": 10.0,
+  "context_bins": 20,
+  "context_duration_ms": 200.0,
+  "onnx_input_shape": [
+    1,
+    1280
+  ],
+  "onnx_output_shape": [
+    1,
+    12
+  ],
+  "best_alpha": 3.0,
+  "notes": "Windowed ridge decoder. Input is 20 bins x 64 channels flattened to 1280. Outputs gt_0..gt_9 as clipped controller-like values in the original scale; gt_10 and gt_11 are hard-set to zero.",
+  "synapse_app_parameters": {
+    "model_name": "model",
+    "input_channels": 64,
+    "frames_per_step": 320
+  }
+}

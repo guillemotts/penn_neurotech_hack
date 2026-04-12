@@ -1,0 +1,12 @@
+{
+  "n_bins": 8759,
+  "bin_size_samples": 300,
+  "fs": 30000,
+  "bin_seconds": 0.01,
+  "active_channels": [
+    0,
+    1,
+    4
+  ],
+  "mode": "easy"
+}
